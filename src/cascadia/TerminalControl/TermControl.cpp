@@ -2565,4 +2565,9 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     {
         _playWarningBell->Run();
     }
+
+    bool TermControl::UpdateSelection(Core::SelectionDirection direction, Core::SelectionExpansion mode)
+    {
+        return _core.UpdateSelection(direction, mode);
+    }
 }
