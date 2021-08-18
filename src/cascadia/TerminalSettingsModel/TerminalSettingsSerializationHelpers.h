@@ -479,6 +479,7 @@ JSON_FLAG_MAPPER(::winrt::Microsoft::Terminal::Settings::Model::IntenseStyle)
         pair_type{ "bright", ValueType::Bright },
         pair_type{ "all", AllSet },
     };
+};
 
 JSON_ENUM_MAPPER(::winrt::Microsoft::Terminal::Core::SelectionDirection)
 {
