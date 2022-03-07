@@ -67,6 +67,7 @@ Abstract:
 #include <winrt/Windows.ui.xaml.media.h>
 #include <winrt/Windows.ApplicationModel.h>
 #include <winrt/Windows.ApplicationModel.Resources.Core.h>
+#include <winrt/Windows.UI.Composition.h>
 
 #include <winrt/TerminalApp.h>
 #include <winrt/Microsoft.Terminal.Settings.Model.h>
@@ -88,3 +89,5 @@ TRACELOGGING_DECLARE_PROVIDER(g_hWindowsTerminalProvider);
 #include <processenv.h>
 #include <WinUser.h>
 #include "til.h"
+
+#include <cppwinrt_utils.h>

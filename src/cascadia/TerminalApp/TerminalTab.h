@@ -21,14 +21,13 @@ namespace winrt::TerminalApp::implementation
     struct TerminalTab : TerminalTabT<TerminalTab, TabBase>
     {
     public:
-        TerminalTab(const GUID& profile, const winrt::Microsoft::Terminal::Control::TermControl& control);
         TerminalTab(std::shared_ptr<Pane> rootPane);
 
         // Called after construction to perform the necessary setup, which relies on weak_ptr
         void Initialize();
 
         winrt::Microsoft::Terminal::Control::TermControl GetActiveTerminalControl() const;
-        std::optional<GUID> GetFocusedProfile() const noexcept;
+        winrt::Microsoft::Terminal::Settings::Model::Profile GetFocusedProfile() const noexcept;
 
         void Focus(winrt::Windows::UI::Xaml::FocusState focusState) override;
 
@@ -38,10 +37,9 @@ namespace winrt::TerminalApp::implementation
         std::shared_ptr<Pane> DetachPane();
         void AttachPane(std::shared_ptr<Pane> pane);
 
-        void SplitPane(winrt::Microsoft::Terminal::Settings::Model::SplitState splitType,
+        void SplitPane(winrt::Microsoft::Terminal::Settings::Model::SplitDirection splitType,
                        const float splitSize,
-                       const GUID& profile,
-                       winrt::Microsoft::Terminal::Control::TermControl& control);
+                       std::shared_ptr<Pane> newPane);
 
         void ToggleSplitOrientation();
         winrt::fire_and_forget UpdateIcon(const winrt::hstring iconPath);
@@ -51,18 +49,16 @@ namespace winrt::TerminalApp::implementation
         winrt::fire_and_forget ActivateBellIndicatorTimer();
 
         float CalcSnappedDimension(const bool widthOrHeight, const float dimension) const;
-        winrt::Microsoft::Terminal::Settings::Model::SplitState PreCalculateAutoSplit(winrt::Windows::Foundation::Size rootSize) const;
-        bool PreCalculateCanSplit(winrt::Microsoft::Terminal::Settings::Model::SplitState splitType,
-                                  const float splitSize,
-                                  winrt::Windows::Foundation::Size availableSpace) const;
+        std::optional<winrt::Microsoft::Terminal::Settings::Model::SplitDirection> PreCalculateCanSplit(winrt::Microsoft::Terminal::Settings::Model::SplitDirection splitType,
+                                                                                                        const float splitSize,
+                                                                                                        winrt::Windows::Foundation::Size availableSpace) const;
 
-        void ResizeContent(const winrt::Windows::Foundation::Size& newSize);
         void ResizePane(const winrt::Microsoft::Terminal::Settings::Model::ResizeDirection& direction);
         bool NavigateFocus(const winrt::Microsoft::Terminal::Settings::Model::FocusDirection& direction);
         bool SwapPane(const winrt::Microsoft::Terminal::Settings::Model::FocusDirection& direction);
         bool FocusPane(const uint32_t id);
 
-        void UpdateSettings(const Microsoft::Terminal::Settings::Model::TerminalSettingsCreateResult& settings, const GUID& profile);
+        void UpdateSettings();
         winrt::fire_and_forget UpdateTitle();
 
         void Shutdown() override;
@@ -79,10 +75,13 @@ namespace winrt::TerminalApp::implementation
         void ResetRuntimeTabColor();
         void ActivateColorPicker();
 
+        void UpdateZoom(std::shared_ptr<Pane> newFocus);
         void ToggleZoom();
         bool IsZoomed();
         void EnterZoom();
         void ExitZoom();
+
+        std::vector<Microsoft::Terminal::Settings::Model::ActionAndArgs> BuildStartupActions() const override;
 
         int GetLeafPaneCount() const noexcept;
 
@@ -90,17 +89,20 @@ namespace winrt::TerminalApp::implementation
         std::shared_ptr<Pane> GetActivePane() const;
         winrt::TerminalApp::TaskbarState GetCombinedTaskbarState() const;
 
+        std::shared_ptr<Pane> GetRootPane() const { return _rootPane; }
+
         winrt::TerminalApp::TerminalTabStatus TabStatus()
         {
             return _tabStatus;
         }
 
-        DECLARE_EVENT(ActivePaneChanged, _ActivePaneChangedHandlers, winrt::delegate<>);
-        DECLARE_EVENT(ColorSelected, _colorSelected, winrt::delegate<winrt::Windows::UI::Color>);
-        DECLARE_EVENT(ColorCleared, _colorCleared, winrt::delegate<>);
-        DECLARE_EVENT(TabRaiseVisualBell, _TabRaiseVisualBellHandlers, winrt::delegate<>);
-        DECLARE_EVENT(DuplicateRequested, _DuplicateRequestedHandlers, winrt::delegate<>);
-        DECLARE_EVENT(SplitTabRequested, _SplitTabRequestedHandlers, winrt::delegate<>);
+        WINRT_CALLBACK(ActivePaneChanged, winrt::delegate<>);
+        WINRT_CALLBACK(ColorSelected, winrt::delegate<winrt::Windows::UI::Color>);
+        WINRT_CALLBACK(ColorCleared, winrt::delegate<>);
+        WINRT_CALLBACK(TabRaiseVisualBell, winrt::delegate<>);
+        WINRT_CALLBACK(DuplicateRequested, winrt::delegate<>);
+        WINRT_CALLBACK(SplitTabRequested, winrt::delegate<>);
+        WINRT_CALLBACK(ExportTabRequested, winrt::delegate<>);
         TYPED_EVENT(TaskbarProgressChanged, IInspectable, IInspectable);
 
     private:
@@ -118,7 +120,6 @@ namespace winrt::TerminalApp::implementation
         struct ControlEventTokens
         {
             winrt::event_token titleToken;
-            winrt::event_token fontToken;
             winrt::event_token colorToken;
             winrt::event_token taskbarToken;
             winrt::event_token readOnlyToken;
@@ -133,6 +134,7 @@ namespace winrt::TerminalApp::implementation
 
         bool _receivedKeyDown{ false };
         bool _iconHidden{ false };
+        bool _changingActivePane{ false };
 
         winrt::hstring _runtimeTabText{};
         bool _inRename{ false };

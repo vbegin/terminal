@@ -2,19 +2,16 @@
 // Licensed under the MIT license.
 
 #include "precomp.h"
-
-#include "stateMachine.hpp"
 #include "OutputStateMachineEngine.hpp"
-#include "base64.hpp"
 
 #include "ascii.hpp"
+#include "base64.hpp"
+#include "stateMachine.hpp"
 #include "../../types/inc/utils.hpp"
+#include "../renderer/vt/vtrenderer.hpp"
 
 using namespace Microsoft::Console;
 using namespace Microsoft::Console::VirtualTerminal;
-
-// the console uses 0xffffffff as an "invalid color" value
-constexpr COLORREF INVALID_COLOR = 0xffffffff;
 
 // takes ownership of pDispatch
 OutputStateMachineEngine::OutputStateMachineEngine(std::unique_ptr<ITermDispatch> pDispatch) :
@@ -264,6 +261,10 @@ bool OutputStateMachineEngine::ActionEscDispatch(const VTID id)
     case EscActionCodes::LS3R_LockingShift:
         success = _dispatch->LockingShiftRight(3);
         TermTelemetry::Instance().Log(TermTelemetry::Codes::LS3R);
+        break;
+    case EscActionCodes::DECAC1_AcceptC1Controls:
+        success = _dispatch->AcceptC1Controls(true);
+        TermTelemetry::Instance().Log(TermTelemetry::Codes::DECAC1);
         break;
     case EscActionCodes::DECDHL_DoubleHeightLineTop:
         _dispatch->SetLineRendition(LineRendition::DoubleHeightTop);
@@ -661,6 +662,9 @@ IStateMachineEngine::StringHandler OutputStateMachineEngine::ActionDcsDispatch(c
                                           parameters.at(6),
                                           parameters.at(7));
         break;
+    case DcsActionCodes::DECRQSS_RequestSetting:
+        handler = _dispatch->RequestSetting();
+        break;
     default:
         handler = nullptr;
         break;
@@ -874,57 +878,6 @@ bool OutputStateMachineEngine::_GetOscTitle(const std::wstring_view string,
     return !string.empty();
 }
 
-// Method Description:
-// - Returns true if the engine should attempt to parse a control sequence
-//      following an SS3 escape prefix.
-//   If this is false, an SS3 escape sequence should be dispatched as soon
-//      as it is encountered.
-// Return Value:
-// - True iff we should parse a control sequence following an SS3.
-bool OutputStateMachineEngine::ParseControlSequenceAfterSs3() const noexcept
-{
-    return false;
-}
-
-// Routine Description:
-// - Returns true if the engine should dispatch on the last character of a string
-//      always, even if the sequence hasn't normally dispatched.
-//   If this is false, the engine will persist its state across calls to
-//      ProcessString, and dispatch only at the end of the sequence.
-// Return Value:
-// - True iff we should manually dispatch on the last character of a string.
-bool OutputStateMachineEngine::FlushAtEndOfString() const noexcept
-{
-    return false;
-}
-
-// Routine Description:
-// - Returns true if the engine should dispatch control characters in the Escape
-//      state. Typically, control characters are immediately executed in the
-//      Escape state without returning to ground. If this returns true, the
-//      state machine will instead call ActionExecuteFromEscape and then enter
-//      the Ground state when a control character is encountered in the escape
-//      state.
-// Return Value:
-// - True iff we should return to the Ground state when the state machine
-//      encounters a Control (C0) character in the Escape state.
-bool OutputStateMachineEngine::DispatchControlCharsFromEscape() const noexcept
-{
-    return false;
-}
-
-// Routine Description:
-// - Returns false if the engine wants to be able to collect intermediate
-//   characters in the Escape state. We do want to buffer characters as
-//   intermediates. We need them for things like Designate G0 Character Set
-// Return Value:
-// - True iff we should dispatch in the Escape state when we encounter a
-//   Intermediate character.
-bool OutputStateMachineEngine::DispatchIntermediatesFromEscape() const noexcept
-{
-    return false;
-}
-
 // Routine Description:
 // - OSC 4 ; c ; spec ST
 //      c: the index of the ansi color table
@@ -940,8 +893,7 @@ bool OutputStateMachineEngine::DispatchIntermediatesFromEscape() const noexcept
 // - True if at least one table index and color was parsed successfully. False otherwise.
 bool OutputStateMachineEngine::_GetOscSetColorTable(const std::wstring_view string,
                                                     std::vector<size_t>& tableIndexes,
-                                                    std::vector<DWORD>& rgbs) const noexcept
-try
+                                                    std::vector<DWORD>& rgbs) const
 {
     const auto parts = Utils::SplitString(string, L';');
     if (parts.size() < 2)
@@ -969,7 +921,6 @@ try
 
     return tableIndexes.size() > 0 && rgbs.size() > 0;
 }
-CATCH_LOG_RETURN_FALSE()
 
 #pragma warning(push)
 #pragma warning(disable : 26445) // Suppress lifetime check for a reference to gsl::span or std::string_view
@@ -1036,8 +987,7 @@ bool OutputStateMachineEngine::_ParseHyperlink(const std::wstring_view string,
 // Return Value:
 // - True if at least one color was parsed successfully. False otherwise.
 bool OutputStateMachineEngine::_GetOscSetColor(const std::wstring_view string,
-                                               std::vector<DWORD>& rgbs) const noexcept
-try
+                                               std::vector<DWORD>& rgbs) const
 {
     const auto parts = Utils::SplitString(string, L';');
     if (parts.size() < 1)
@@ -1063,7 +1013,6 @@ try
 
     return rgbs.size() > 0;
 }
-CATCH_LOG_RETURN_FALSE()
 
 // Method Description:
 // - Sets us up to have another terminal acting as the tty instead of conhost.
@@ -1078,7 +1027,7 @@ CATCH_LOG_RETURN_FALSE()
 //      currently processing.
 // Return Value:
 // - <none>
-void OutputStateMachineEngine::SetTerminalConnection(ITerminalOutputConnection* const pTtyConnection,
+void OutputStateMachineEngine::SetTerminalConnection(Render::VtEngine* const pTtyConnection,
                                                      std::function<bool()> pfnFlushToTerminal)
 {
     this->_pTtyConnection = pTtyConnection;
@@ -1098,22 +1047,22 @@ bool OutputStateMachineEngine::_GetOscSetClipboard(const std::wstring_view strin
                                                    std::wstring& content,
                                                    bool& queryClipboard) const noexcept
 {
-    const size_t pos = string.find(';');
-    if (pos != std::wstring_view::npos)
+    const auto pos = string.find(L';');
+    if (pos == std::wstring_view::npos)
     {
-        const std::wstring_view substr = string.substr(pos + 1);
-        if (substr == L"?")
-        {
-            queryClipboard = true;
-            return true;
-        }
-        else
-        {
-            return Base64::s_Decode(substr, content);
-        }
+        return false;
     }
 
-    return false;
+    const auto substr = string.substr(pos + 1);
+    if (substr == L"?")
+    {
+        queryClipboard = true;
+        return true;
+    }
+
+// Log_IfFailed has the following description: "Should be decorated WI_NOEXCEPT, but conflicts with forceinline."
+#pragma warning(suppress : 26447) // The function is declared 'noexcept' but calls function 'Log_IfFailed()' which may throw exceptions (f.6).
+    return SUCCEEDED_LOG(Base64::Decode(substr, content));
 }
 
 // Method Description:

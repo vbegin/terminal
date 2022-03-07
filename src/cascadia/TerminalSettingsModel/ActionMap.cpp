@@ -15,36 +15,45 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
 {
     static InternalActionID Hash(const Model::ActionAndArgs& actionAndArgs)
     {
-        size_t hashedAction{ HashUtils::HashProperty(actionAndArgs.Action()) };
+        til::hasher hasher;
 
-        size_t hashedArgs{};
-        if (const auto& args{ actionAndArgs.Args() })
+        // action will be hashed last.
+        // This allows us to first seed a til::hasher
+        // with the return value of IActionArgs::Hash().
+        const auto action = actionAndArgs.Action();
+
+        if (const auto args = actionAndArgs.Args())
         {
-            // Args are defined, so hash them
-            hashedArgs = gsl::narrow_cast<size_t>(args.Hash());
+            hasher = til::hasher{ gsl::narrow_cast<size_t>(args.Hash()) };
         }
         else
         {
+            size_t hash = 0;
+
             // Args are not defined.
             // Check if the ShortcutAction supports args.
-            switch (actionAndArgs.Action())
+            switch (action)
             {
-#define ON_ALL_ACTIONS_WITH_ARGS(action)                        \
-    case ShortcutAction::action:                                \
-        /* If it does, hash the default values for the args.*/  \
-        hashedArgs = EmptyHash<implementation::action##Args>(); \
-        break;
+#define ON_ALL_ACTIONS_WITH_ARGS(action)                               \
+    case ShortcutAction::action:                                       \
+    {                                                                  \
+        /* If it does, hash the default values for the args. */        \
+        static const auto cachedHash = gsl::narrow_cast<size_t>(       \
+            winrt::make_self<implementation::action##Args>()->Hash()); \
+        hash = cachedHash;                                             \
+        break;                                                         \
+    }
                 ALL_SHORTCUT_ACTIONS_WITH_ARGS
 #undef ON_ALL_ACTIONS_WITH_ARGS
             default:
-            {
-                // Otherwise, hash nullptr.
-                std::hash<IActionArgs> argsHash;
-                hashedArgs = argsHash(nullptr);
+                break;
             }
-            }
+
+            hasher = til::hasher{ hash };
         }
-        return hashedAction ^ hashedArgs;
+
+        hasher.write(action);
+        return hasher.finalize();
     }
 
     // Method Description:
@@ -94,15 +103,14 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
     static void RegisterShortcutAction(ShortcutAction shortcutAction, std::unordered_map<hstring, Model::ActionAndArgs>& list, std::unordered_set<InternalActionID>& visited)
     {
         const auto actionAndArgs{ make_self<ActionAndArgs>(shortcutAction) };
-        if (actionAndArgs->Action() != ShortcutAction::Invalid)
+        /*We have a valid action.*/
+        /*Check if the action was already added.*/
+        if (visited.find(Hash(*actionAndArgs)) == visited.end())
         {
-            /*We have a valid action.*/
-            /*Check if the action was already added.*/
-            if (visited.find(Hash(*actionAndArgs)) == visited.end())
+            /*This is an action that wasn't added!*/
+            /*Let's add it if it has a name.*/
+            if (const auto name{ actionAndArgs->GenerateName() }; !name.empty())
             {
-                /*This is an action that wasn't added!*/
-                /*Let's add it.*/
-                const auto name{ actionAndArgs->GenerateName() };
                 list.insert({ name, *actionAndArgs });
             }
         }

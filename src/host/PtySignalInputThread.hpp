@@ -15,6 +15,11 @@ Author(s):
 --*/
 #pragma once
 
+namespace Microsoft::Console::VirtualTerminal
+{
+    class ConGetSet;
+}
+
 namespace Microsoft::Console
 {
     class PtySignalInputThread final
@@ -35,6 +40,7 @@ namespace Microsoft::Console
     private:
         enum class PtySignal : unsigned short
         {
+            ClearBuffer = 2,
             ResizeWindow = 8
         };
 
@@ -47,6 +53,7 @@ namespace Microsoft::Console
         [[nodiscard]] HRESULT _InputThread();
         bool _GetData(_Out_writes_bytes_(cbBuffer) void* const pBuffer, const DWORD cbBuffer);
         void _DoResizeWindow(const ResizeWindowData& data);
+        void _DoClearBuffer();
         void _Shutdown();
 
         wil::unique_hfile _hFile;

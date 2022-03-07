@@ -92,7 +92,9 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleCreateObject(_In_ PCONSOLE_API_MSG pMessa
 
     if (!NT_SUCCESS(Status))
     {
-        goto Error;
+        UnlockConsole();
+        pMessage->SetReplyStatus(Status);
+        return pMessage;
     }
 
     auto deviceComm{ ServiceLocator::LocateGlobals().pDeviceComm };
@@ -110,16 +112,6 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleCreateObject(_In_ PCONSOLE_API_MSG pMessa
     UnlockConsole();
 
     return nullptr;
-
-Error:
-
-    FAIL_FAST_IF(NT_SUCCESS(Status));
-
-    UnlockConsole();
-
-    pMessage->SetReplyStatus(Status);
-
-    return pMessage;
 }
 
 // Routine Description:
@@ -137,6 +129,32 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleCloseObject(_In_ PCONSOLE_API_MSG pMessag
 
     UnlockConsole();
     return pMessage;
+}
+
+// LsaGetLoginSessionData might also fit the bill here, but it looks like it does RPC with lsass.exe. Using user32 is cheaper.
+#pragma warning(suppress : 4505)
+static bool _isInteractiveUserSession()
+{
+    DWORD sessionId{};
+    if (ProcessIdToSessionId(GetCurrentProcessId(), &sessionId) && sessionId == 0)
+    {
+        return false;
+    }
+
+    // don't call CloseWindowStation on GetProcessWindowStation handle or switch this to a unique_hwinsta
+    HWINSTA winsta{ GetProcessWindowStation() };
+    if (winsta)
+    {
+        USEROBJECTFLAGS flags{};
+        if (GetUserObjectInformationW(winsta, UOI_FLAGS, &flags, sizeof(flags), nullptr))
+        {
+            // An invisible window station suggests that we aren't interactive.
+            return WI_IsFlagSet(flags.dwFlags, WSF_VISIBLE);
+        }
+    }
+
+    // Assume that we are interactive if the flags can't be looked up or there's no window station
+    return true;
 }
 
 // Routine Description:
@@ -159,6 +177,15 @@ static bool _shouldAttemptHandoff(const Globals& globals,
     return false;
 
 #else
+
+    // Service desktops and non-interactive sessions should not
+    // try to hand off -- they probably don't have any terminals
+    // installed, and we don't want to risk breaking a service if
+    // they *do*.
+    if (!_isInteractiveUserSession())
+    {
+        return false;
+    }
 
     // This console was started with a command line argument to
     // specifically block handoff to another console. We presume
@@ -256,17 +283,33 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
     Telemetry::Instance().LogApiCall(Telemetry::ApiCall::AttachConsole);
 
     ConsoleProcessHandle* ProcessData = nullptr;
+    NTSTATUS Status;
 
     LockConsole();
+
+    const auto cleanup = wil::scope_exit([&]() noexcept {
+        if (!NT_SUCCESS(Status))
+        {
+            pReceiveMsg->SetReplyStatus(Status);
+            if (ProcessData != nullptr)
+            {
+                CommandHistory::s_Free(ProcessData);
+                gci.ProcessHandleList.FreeProcessData(ProcessData);
+            }
+        }
+
+        // FreeProcessData() above requires the console to be locked.
+        UnlockConsole();
+    });
 
     DWORD const dwProcessId = (DWORD)pReceiveMsg->Descriptor.Process;
     DWORD const dwThreadId = (DWORD)pReceiveMsg->Descriptor.Object;
 
     CONSOLE_API_CONNECTINFO Cac;
-    NTSTATUS Status = ConsoleInitializeConnectInfo(pReceiveMsg, &Cac);
+    Status = ConsoleInitializeConnectInfo(pReceiveMsg, &Cac);
     if (!NT_SUCCESS(Status))
     {
-        goto Error;
+        return pReceiveMsg;
     }
 
     // If we pass the tests...
@@ -334,6 +377,13 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
             // Start it if it was successfully created.
             THROW_IF_FAILED(hostSignalThread->Start());
 
+            TraceLoggingWrite(g_hConhostV2EventTraceProvider,
+                              "ConsoleHandoffSucceeded",
+                              TraceLoggingDescription("successfully handed off console connection"),
+                              TraceLoggingGuid(Globals.handoffConsoleClsid.value(), "handoffCLSID"),
+                              TraceLoggingKeyword(MICROSOFT_KEYWORD_MEASURES),
+                              TelemetryPrivacyDataTag(PDT_ProductAndServiceUsage));
+
             // Unlock in case anything tries to spool down as we exit.
             UnlockConsole();
 
@@ -343,7 +393,21 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
             // Exit process to clean up any outstanding things we have open.
             ExitProcess(S_OK);
         }
-        CATCH_LOG(); // Just log, don't do anything more. We'll move on to launching normally on failure.
+        catch (...)
+        {
+            const auto hr = wil::ResultFromCaughtException();
+
+            TraceLoggingWrite(g_hConhostV2EventTraceProvider,
+                              "ConsoleHandoffFailed",
+                              TraceLoggingDescription("failed while attempting handoff"),
+                              TraceLoggingGuid(Globals.handoffConsoleClsid.value(), "handoffCLSID"),
+                              TraceLoggingHResult(hr),
+                              TraceLoggingKeyword(MICROSOFT_KEYWORD_MEASURES),
+                              TelemetryPrivacyDataTag(PDT_ProductAndServiceUsage));
+
+            // Just log, don't do anything more. We'll move on to launching normally on failure.
+            LOG_CAUGHT_EXCEPTION();
+        }
     }
 
     Status = NTSTATUS_FROM_HRESULT(gci.ProcessHandleList.AllocProcessData(dwProcessId,
@@ -354,7 +418,7 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
 
     if (!NT_SUCCESS(Status))
     {
-        goto Error;
+        return pReceiveMsg;
     }
 
     ProcessData->fRootProcess = WI_IsFlagClear(gci.Flags, CONSOLE_INITIALIZED);
@@ -376,7 +440,7 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
         Status = ConsoleAllocateConsole(&Cac);
         if (!NT_SUCCESS(Status))
         {
-            goto Error;
+            return pReceiveMsg;
         }
 
         WI_SetFlag(gci.Flags, CONSOLE_INITIALIZED);
@@ -389,7 +453,7 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
     catch (...)
     {
         LOG_CAUGHT_EXCEPTION();
-        goto Error;
+        return pReceiveMsg;
     }
 
     gci.ProcessHandleList.ModifyConsoleProcessFocus(WI_IsFlagSet(gci.Flags, CONSOLE_HAS_FOCUS));
@@ -403,7 +467,7 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
 
     if (!NT_SUCCESS(Status))
     {
-        goto Error;
+        return pReceiveMsg;
     }
 
     auto& screenInfo = gci.GetActiveOutputBuffer().GetMainBuffer();
@@ -414,7 +478,7 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
 
     if (!NT_SUCCESS(Status))
     {
-        goto Error;
+        return pReceiveMsg;
     }
 
     // Complete the request.
@@ -432,24 +496,9 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleHandleConnectionRequest(_In_ PCONSOLE_API
         gci.ProcessHandleList.FreeProcessData(ProcessData);
     }
 
-    UnlockConsole();
+    Tracing::s_TraceConsoleAttachDetach(ProcessData, true);
 
     return nullptr;
-
-Error:
-    FAIL_FAST_IF(NT_SUCCESS(Status));
-
-    if (ProcessData != nullptr)
-    {
-        CommandHistory::s_Free((HANDLE)ProcessData);
-        gci.ProcessHandleList.FreeProcessData(ProcessData);
-    }
-
-    UnlockConsole();
-
-    pReceiveMsg->SetReplyStatus(Status);
-
-    return pReceiveMsg;
 }
 
 // Routine Description:
@@ -469,6 +518,8 @@ PCONSOLE_API_MSG IoDispatchers::ConsoleClientDisconnectRoutine(_In_ PCONSOLE_API
     {
         pNotifier->NotifyConsoleEndApplicationEvent(pProcessData->dwProcessId);
     }
+
+    Tracing::s_TraceConsoleAttachDetach(pProcessData, false);
 
     LOG_IF_FAILED(RemoveConsole(pProcessData));
 

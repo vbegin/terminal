@@ -84,25 +84,6 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
     }
 
     // Method Description:
-    // - Create a TerminalSettingsCreateResult for the provided profile guid. We'll
-    //   use the guid to look up the profile that should be used to
-    //   create these TerminalSettings. Then, we'll apply settings contained in the
-    //   global and profile settings to the instance.
-    // Arguments:
-    // - appSettings: the set of settings being used to construct the new terminal
-    // - profileGuid: the unique identifier (guid) of the profile
-    // - keybindings: the keybinding handler
-    // Return Value:
-    // - A TerminalSettingsCreateResult, which contains a pair of TerminalSettings objects,
-    //   one for when the terminal is focused and the other for when the terminal is unfocused
-    Model::TerminalSettingsCreateResult TerminalSettings::CreateWithProfileByID(const Model::CascadiaSettings& appSettings, winrt::guid profileGuid, const IKeyBindings& keybindings)
-    {
-        const auto profile = appSettings.FindProfile(profileGuid);
-        THROW_HR_IF_NULL(E_INVALIDARG, profile);
-        return CreateWithProfile(appSettings, profile, keybindings);
-    }
-
-    // Method Description:
     // - Create a TerminalSettings object for the provided newTerminalArgs. We'll
     //   use the newTerminalArgs to look up the profile that should be used to
     //   create these TerminalSettings. Then, we'll apply settings contained in the
@@ -124,8 +105,8 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
                                                                                     const NewTerminalArgs& newTerminalArgs,
                                                                                     const IKeyBindings& keybindings)
     {
-        const guid profileGuid = appSettings.GetProfileForArgs(newTerminalArgs);
-        auto settingsPair{ CreateWithProfileByID(appSettings, profileGuid, keybindings) };
+        const auto profile = appSettings.GetProfileForArgs(newTerminalArgs);
+        auto settingsPair{ CreateWithProfile(appSettings, profile, keybindings) };
         auto defaultSettings = settingsPair.DefaultSettings();
 
         if (newTerminalArgs)
@@ -143,6 +124,21 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
             {
                 defaultSettings.StartingTitle(newTerminalArgs.TabTitle());
             }
+            else
+            {
+                // There was no title, and no profile from which to infer the title.
+                // Per GH#6776, promote the first component of the command line to the title.
+                // This will ensure that the tab we spawn has a name (since it didn't get one from its profile!)
+                if (newTerminalArgs.Profile().empty() && !newTerminalArgs.Commandline().empty())
+                {
+                    const std::wstring_view commandLine{ newTerminalArgs.Commandline() };
+                    const auto start{ til::at(commandLine, 0) == L'"' ? 1 : 0 };
+                    const auto terminator{ commandLine.find_first_of(start ? L'"' : L' ', start) }; // look past the first character if it starts with "
+                    // We have to take a copy here; winrt::param::hstring requires a null-terminated string
+                    const std::wstring firstComponent{ commandLine.substr(start, terminator - start) };
+                    defaultSettings.StartingTitle(firstComponent);
+                }
+            }
             if (newTerminalArgs.TabColor())
             {
                 defaultSettings.StartingTabColor(winrt::Windows::Foundation::IReference<winrt::Microsoft::Terminal::Core::Color>{ til::color{ newTerminalArgs.TabColor().Value() } });
@@ -158,6 +154,14 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
                 {
                     defaultSettings.ApplyColorScheme(scheme);
                 }
+            }
+            // Elevate on NewTerminalArgs is an optional value, so the default
+            // value (null) doesn't override a profile's value. Note that
+            // elevate:false in an already elevated terminal does nothing - the
+            // profile will still be launched elevated.
+            if (newTerminalArgs.Elevate())
+            {
+                defaultSettings.Elevate(newTerminalArgs.Elevate().Value());
             }
         }
 
@@ -205,59 +209,9 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
 
         _IntenseIsBold = WI_IsFlagSet(appearance.IntenseTextStyle(), Microsoft::Terminal::Settings::Model::IntenseStyle::Bold);
         _IntenseIsBright = WI_IsFlagSet(appearance.IntenseTextStyle(), Microsoft::Terminal::Settings::Model::IntenseStyle::Bright);
-    }
 
-    // Method Description:
-    // - Creates a TerminalSettingsCreateResult from a parent TerminalSettingsCreateResult
-    // - The returned defaultSettings inherits from the parent's defaultSettings, and the
-    //   returned unfocusedSettings inherits from the returned defaultSettings
-    // - Note that the unfocused settings needs to be entirely unchanged _except_ we need to
-    //   set its parent to the other settings object that we return. This is because the overrides
-    //   made by the control will live in that other settings object, so we want to make
-    //   sure the unfocused settings inherit from that.
-    // - Another way to think about this is that initially we have UnfocusedSettings inherit
-    //   from DefaultSettings. This function simply adds another TerminalSettings object
-    //   in the middle of these two, so UnfocusedSettings now inherits from the new object
-    //   and the new object inherits from the DefaultSettings. And this new object is what
-    //   the control can put overrides in.
-    // Arguments:
-    // - parent: the TerminalSettingsCreateResult that we create a new one from
-    // Return Value:
-    // - A TerminalSettingsCreateResult object that contains a defaultSettings that inherits
-    //   from parent's defaultSettings, and contains an unfocusedSettings that inherits from
-    //   its defaultSettings
-    Model::TerminalSettingsCreateResult TerminalSettings::CreateWithParent(const Model::TerminalSettingsCreateResult& parent)
-    {
-        THROW_HR_IF_NULL(E_INVALIDARG, parent);
-
-        auto defaultImpl{ get_self<TerminalSettings>(parent.DefaultSettings()) };
-        auto defaultChild = defaultImpl->CreateChild();
-        if (parent.UnfocusedSettings())
-        {
-            parent.UnfocusedSettings().SetParent(*defaultChild);
-        }
-        return winrt::make<TerminalSettingsCreateResult>(*defaultChild, parent.UnfocusedSettings());
-    }
-
-    // Method Description:
-    // - Sets our parent to the provided TerminalSettings
-    // Arguments:
-    // - parent: our new parent
-    void TerminalSettings::SetParent(const Model::TerminalSettings& parent)
-    {
-        ClearParents();
-        com_ptr<TerminalSettings> parentImpl;
-        parentImpl.copy_from(get_self<TerminalSettings>(parent));
-        InsertParent(parentImpl);
-    }
-
-    Model::TerminalSettings TerminalSettings::GetParent()
-    {
-        if (_parents.size() > 0)
-        {
-            return *_parents.at(0);
-        }
-        return nullptr;
+        _AdjustIndistinguishableColors = appearance.AdjustIndistinguishableColors();
+        _Opacity = appearance.Opacity();
     }
 
     // Method Description:
@@ -276,8 +230,8 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
 
         // Fill in the remaining properties from the profile
         _ProfileName = profile.Name();
+        _ProfileSource = profile.Source();
         _UseAcrylic = profile.UseAcrylic();
-        _TintOpacity = profile.AcrylicOpacity();
 
         _FontFace = profile.FontInfo().FontFace();
         _FontSize = profile.FontInfo().FontSize();
@@ -299,6 +253,7 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
             _SuppressApplicationTitle = profile.SuppressApplicationTitle();
         }
 
+        _UseAtlasEngine = profile.UseAtlasEngine();
         _ScrollState = profile.ScrollState();
 
         _AntialiasingMode = profile.AntialiasingMode();
@@ -308,6 +263,8 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
             const til::color colorRef{ profile.TabColor().Value() };
             _TabColor = static_cast<winrt::Microsoft::Terminal::Core::Color>(colorRef);
         }
+
+        _Elevate = profile.Elevate();
     }
 
     // Method Description:
@@ -344,6 +301,7 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
         // settings.
         if (scheme == nullptr)
         {
+            ClearAppliedColorScheme();
             ClearDefaultForeground();
             ClearDefaultBackground();
             ClearSelectionBackground();
@@ -352,6 +310,7 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
         }
         else
         {
+            AppliedColorScheme(scheme);
             _DefaultForeground = til::color{ scheme.Foreground() };
             _DefaultBackground = til::color{ scheme.Background() };
             _SelectionBackground = til::color{ scheme.SelectionBackground() };

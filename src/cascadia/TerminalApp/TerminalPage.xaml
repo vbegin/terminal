@@ -9,26 +9,73 @@
       xmlns:local="using:TerminalApp"
       xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
       xmlns:mux="using:Microsoft.UI.Xaml.Controls"
+      Background="Transparent"
       mc:Ignorable="d">
 
     <Grid x:Name="Root"
-          Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+          Background="Transparent">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <local:TabRowControl x:Name="TabRow"
-                             Grid.Row="0" />
+                             Grid.Row="0"
+                             KeyUp="_KeyDownHandler" />
+
+        <StackPanel Grid.Row="1"
+                    Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+            <mux:InfoBar x:Name="KeyboardServiceWarningInfoBar"
+                         x:Load="False"
+                         IsClosable="True"
+                         IsIconVisible="True"
+                         IsOpen="False"
+                         Message="{x:Bind KeyboardServiceDisabledText, Mode=OneWay}"
+                         Severity="Warning">
+                <mux:InfoBar.ActionButton>
+                    <Button x:Uid="InfoBarDismissButton"
+                            Click="_KeyboardServiceWarningInfoDismissHandler" />
+                </mux:InfoBar.ActionButton>
+            </mux:InfoBar>
+
+            <mux:InfoBar x:Name="CloseOnExitInfoBar"
+                         x:Uid="CloseOnExitInfoBar"
+                         x:Load="False"
+                         IsClosable="True"
+                         IsIconVisible="True"
+                         IsOpen="False"
+                         Severity="Informational">
+                <mux:InfoBar.ActionButton>
+                    <Button x:Uid="InfoBarDismissButton"
+                            Click="_CloseOnExitInfoDismissHandler" />
+                </mux:InfoBar.ActionButton>
+            </mux:InfoBar>
+
+            <mux:InfoBar x:Name="SetAsDefaultInfoBar"
+                         x:Uid="SetAsDefaultInfoBar"
+                         x:Load="False"
+                         CloseButtonClick="_SetAsDefaultDismissHandler"
+                         IsClosable="True"
+                         IsIconVisible="True"
+                         IsOpen="False"
+                         Severity="Informational">
+                <mux:InfoBar.ActionButton>
+                    <HyperlinkButton x:Uid="SetAsDefaultTip_OpenSettingsLink"
+                                     Click="_SetAsDefaultOpenSettingsHandler" />
+                </mux:InfoBar.ActionButton>
+            </mux:InfoBar>
+        </StackPanel>
 
         <Grid x:Name="TabContent"
-              Grid.Row="1"
+              Grid.Row="2"
               HorizontalAlignment="Stretch"
               VerticalAlignment="Stretch" />
 
         <ContentDialog x:Name="AboutDialog"
                        x:Uid="AboutDialog"
                        x:Load="False"
+                       CloseButtonClick="_DialogCloseClick"
                        DefaultButton="Close">
             <StackPanel Orientation="Vertical">
                 <TextBlock IsTextSelectionEnabled="True">
@@ -47,19 +94,28 @@
             </StackPanel>
         </ContentDialog>
 
+        <ContentDialog x:Name="QuitDialog"
+                       x:Uid="QuitDialog"
+                       x:Load="False"
+                       CloseButtonClick="_DialogCloseClick"
+                       DefaultButton="Primary" />
+
         <ContentDialog x:Name="CloseAllDialog"
                        x:Uid="CloseAllDialog"
                        x:Load="False"
+                       CloseButtonClick="_DialogCloseClick"
                        DefaultButton="Primary" />
 
         <ContentDialog x:Name="CloseReadOnlyDialog"
                        x:Uid="CloseReadOnlyDialog"
                        x:Load="False"
+                       CloseButtonClick="_DialogCloseClick"
                        DefaultButton="Close" />
 
         <ContentDialog x:Name="MultiLinePasteDialog"
                        x:Uid="MultiLinePasteDialog"
                        x:Load="False"
+                       CloseButtonClick="_DialogCloseClick"
                        DefaultButton="Primary">
             <StackPanel>
                 <TextBlock x:Uid="MultiLineWarningText"
@@ -79,11 +135,13 @@
         <ContentDialog x:Name="LargePasteDialog"
                        x:Uid="LargePasteDialog"
                        x:Load="False"
+                       CloseButtonClick="_DialogCloseClick"
                        DefaultButton="Primary" />
 
         <ContentDialog x:Name="ControlNoticeDialog"
                        x:Uid="ControlNoticeDialog"
                        x:Load="False"
+                       CloseButtonClick="_DialogCloseClick"
                        DefaultButton="Primary">
             <TextBlock IsTextSelectionEnabled="True"
                        TextWrapping="WrapWholeWords">
@@ -94,6 +152,7 @@
         <ContentDialog x:Name="CouldNotOpenUriDialog"
                        x:Uid="CouldNotOpenUriDialog"
                        x:Load="False"
+                       CloseButtonClick="_DialogCloseClick"
                        DefaultButton="Primary">
             <TextBlock IsTextSelectionEnabled="True"
                        TextWrapping="WrapWholeWords">
@@ -104,18 +163,10 @@
         </ContentDialog>
 
         <local:CommandPalette x:Name="CommandPalette"
-                              Grid.Row="1"
+                              Grid.Row="2"
                               VerticalAlignment="Stretch"
                               PreviewKeyDown="_KeyDownHandler"
                               Visibility="Collapsed" />
-
-        <mux:InfoBar x:Name="KeyboardWarningInfoBar"
-                     x:Load="False"
-                     IsClosable="True"
-                     IsIconVisible="True"
-                     IsOpen="False"
-                     Message="{x:Bind KeyboardServiceDisabledText, Mode=OneWay}"
-                     Severity="Warning" />
 
         <!--
             A TeachingTip with IsLightDismissEnabled="True" will immediately

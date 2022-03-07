@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
 #include "precomp.h"
@@ -27,7 +27,7 @@ CustomTextLayout::CustomTextLayout(gsl::not_null<DxFontRenderData*> const fontRe
     _runs{},
     _breakpoints{},
     _runIndex{ 0 },
-    _width{ gsl::narrow_cast<size_t>(fontRenderData->GlyphCell().width()) },
+    _width{ gsl::narrow_cast<size_t>(fontRenderData->GlyphCell().width) },
     _isEntireTextSimple{ false }
 {
     _localeName.resize(gsl::narrow_cast<size_t>(fontRenderData->DefaultTextFormat()->GetLocaleNameLength()) + 1); // +1 for null
@@ -145,9 +145,16 @@ try
     {
         // TODO: "relative" bold?
         weight = DWRITE_FONT_WEIGHT_BOLD;
+        // Since we are setting the font weight according to the text attribute,
+        // make sure to tell the text format to ignore the user set font weight
+        _fontRenderData->InhibitUserWeight(true);
+    }
+    else
+    {
+        _fontRenderData->InhibitUserWeight(false);
     }
 
-    if (drawingContext->useItalicFont)
+    if (drawingContext->useItalicFont || _fontRenderData->DidUserSetItalic())
     {
         style = DWRITE_FONT_STYLE_ITALIC;
     }
@@ -236,7 +243,7 @@ CATCH_RETURN()
         // Allocate enough room to have one breakpoint per code unit.
         _breakpoints.resize(_text.size());
 
-        if (!_isEntireTextSimple)
+        if (!_isEntireTextSimple || _fontRenderData->DidUserSetAxes())
         {
             // Call each of the analyzers in sequence, recording their results.
             RETURN_IF_FAILED(_fontRenderData->Analyzer()->AnalyzeLineBreakpoints(this, 0, textLength, this));
@@ -397,9 +404,9 @@ CATCH_RETURN()
         std::vector<DWRITE_SHAPING_GLYPH_PROPERTIES> glyphProps(maxGlyphCount);
 
         // Get the features to apply to the font
-        auto features = _fontRenderData->DefaultFontFeatures();
-        DWRITE_FONT_FEATURE* featureList = features.data();
-        DWRITE_TYPOGRAPHIC_FEATURES typographicFeatures = { &featureList[0], gsl::narrow<uint32_t>(features.size()) };
+        const auto& features = _fontRenderData->DefaultFontFeatures();
+#pragma warning(suppress : 26492) // Don't use const_cast to cast away const or volatile (type.3).
+        DWRITE_TYPOGRAPHIC_FEATURES typographicFeatures = { const_cast<DWRITE_FONT_FEATURE*>(features.data()), gsl::narrow<uint32_t>(features.size()) };
         DWRITE_TYPOGRAPHIC_FEATURES const* typographicFeaturesPointer = &typographicFeatures;
         const uint32_t fontFeatureLengths[] = { textLength };
 
@@ -1571,7 +1578,7 @@ CATCH_RETURN();
 // Arguments:
 // - <none>
 // Return Value:
-// - Mutable reference ot the current run.
+// - Mutable reference of the current run.
 [[nodiscard]] CustomTextLayout::LinkedRun& CustomTextLayout::_GetCurrentRun()
 {
     return _runs.at(_runIndex);

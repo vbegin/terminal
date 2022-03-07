@@ -146,12 +146,13 @@ namespace Microsoft::Console::Types
 
         RECT _getTerminalRect() const;
 
-        virtual const COORD _getScreenFontSize() const;
+        virtual const COORD _getScreenFontSize() const noexcept;
 
         const unsigned int _getViewportHeight(const SMALL_RECT viewport) const noexcept;
-        const Viewport _getBufferSize() const noexcept;
+        const Viewport _getOptimizedBufferSize() const noexcept;
+        const til::point _getDocumentEnd() const;
 
-        void _getBoundingRect(const til::rectangle textRect, _Inout_ std::vector<double>& coords) const;
+        void _getBoundingRect(const til::rect& textRect, _Inout_ std::vector<double>& coords) const;
 
         void _expandToEnclosingUnit(TextUnit unit);
 
@@ -171,16 +172,17 @@ namespace Microsoft::Console::Types
         _moveEndpointByUnitLine(_In_ const int moveCount,
                                 _In_ const TextPatternRangeEndpoint endpoint,
                                 gsl::not_null<int*> const pAmountMoved,
-                                _In_ const bool preventBufferEnd = false) noexcept;
+                                _In_ const bool preventBoundary = false) noexcept;
 
         void
         _moveEndpointByUnitDocument(_In_ const int moveCount,
                                     _In_ const TextPatternRangeEndpoint endpoint,
                                     gsl::not_null<int*> const pAmountMoved,
-                                    _In_ const bool preventBufferEnd = false) noexcept;
+                                    _In_ const bool preventBoundary = false) noexcept;
 
         std::optional<bool> _verifyAttr(TEXTATTRIBUTEID attributeId, VARIANT val, const TextAttribute& attr) const;
         bool _initializeAttrQuery(TEXTATTRIBUTEID attributeId, VARIANT* pRetVal, const TextAttribute& attr) const;
+        bool _tryMoveToWordStart(const TextBuffer& buffer, const til::point documentEnd, COORD& resultingPos) const;
 
         COORD _getInclusiveEnd() noexcept;
 

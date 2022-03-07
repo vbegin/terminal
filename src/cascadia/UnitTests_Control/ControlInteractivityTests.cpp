@@ -36,6 +36,7 @@ namespace ControlUnitTests
         TEST_METHOD(TestDragSelectOutsideBounds);
 
         TEST_METHOD(PointerClickOutsideActiveRegion);
+        TEST_METHOD(IncrementCircularBufferWithSelection);
 
         TEST_CLASS_SETUP(ClassSetup)
         {
@@ -70,7 +71,7 @@ namespace ControlUnitTests
                                     TerminalConnection::ITerminalConnection conn)
         {
             Log::Comment(L"Create ControlInteractivity object");
-            auto interactivity = winrt::make_self<Control::implementation::ControlInteractivity>(settings, conn);
+            auto interactivity = winrt::make_self<Control::implementation::ControlInteractivity>(settings, settings, conn);
             VERIFY_IS_NOT_NULL(interactivity);
             auto core = interactivity->_core;
             core->_inUnitTests = true;
@@ -98,10 +99,16 @@ namespace ControlUnitTests
 
         WEX::TestExecution::SetVerifyOutput verifyOutputScope{ WEX::TestExecution::VerifyOutputSettings::LogOnlyFailures };
 
+        BEGIN_TEST_METHOD_PROPERTIES()
+            TEST_METHOD_PROPERTY(L"Data:useAcrylic", L"{true, false}")
+        END_TEST_METHOD_PROPERTIES()
+        bool useAcrylic;
+        VERIFY_SUCCEEDED(TestData::TryGetValue(L"useAcrylic", useAcrylic), L"whether or not we should enable acrylic");
+
         auto [settings, conn] = _createSettingsAndConnection();
 
-        settings->UseAcrylic(true);
-        settings->TintOpacity(0.5f);
+        settings->UseAcrylic(useAcrylic);
+        settings->Opacity(0.5f);
 
         auto [core, interactivity] = _createCoreAndInteractivity(*settings, *conn);
 
@@ -109,16 +116,14 @@ namespace ControlUnitTests
         double expectedOpacity = 0.5;
         auto opacityCallback = [&](auto&&, Control::TransparencyChangedEventArgs args) mutable {
             VERIFY_ARE_EQUAL(expectedOpacity, args.Opacity());
-            VERIFY_ARE_EQUAL(expectedOpacity, settings->TintOpacity());
-            VERIFY_ARE_EQUAL(expectedOpacity, core->_settings.TintOpacity());
+            VERIFY_ARE_EQUAL(expectedOpacity, core->Opacity());
+            // The Settings object's opacity shouldn't be changed
+            VERIFY_ARE_EQUAL(0.5, settings->Opacity());
 
-            if (expectedOpacity < 1.0)
-            {
-                VERIFY_IS_TRUE(settings->UseAcrylic());
-                VERIFY_IS_TRUE(core->_settings.UseAcrylic());
-            }
-            VERIFY_ARE_EQUAL(expectedOpacity < 1.0, settings->UseAcrylic());
-            VERIFY_ARE_EQUAL(expectedOpacity < 1.0, core->_settings.UseAcrylic());
+            auto expectedUseAcrylic = winrt::Microsoft::Terminal::Control::implementation::ControlCore::IsVintageOpacityAvailable() ? useAcrylic :
+                                                                                                                                      (expectedOpacity < 1.0 ? true : false);
+            VERIFY_ARE_EQUAL(useAcrylic, settings->UseAcrylic());
+            VERIFY_ARE_EQUAL(expectedUseAcrylic, core->UseAcrylic());
         };
         core->TransparencyChanged(opacityCallback);
 
@@ -139,7 +144,7 @@ namespace ControlUnitTests
             // The mouse location and buttons don't matter here.
             interactivity->MouseWheel(modifiers,
                                       30,
-                                      til::point{ 0, 0 },
+                                      Core::Point{ 0, 0 },
                                       buttonState);
         }
 
@@ -156,8 +161,8 @@ namespace ControlUnitTests
 
             // The mouse location and buttons don't matter here.
             interactivity->MouseWheel(modifiers,
-                                      30,
-                                      til::point{ 0, 0 },
+                                      -30,
+                                      Core::Point{ 0, 0 },
                                       buttonState);
         }
     }
@@ -214,7 +219,7 @@ namespace ControlUnitTests
 
         interactivity->MouseWheel(modifiers,
                                   WHEEL_DELTA,
-                                  til::point{ 0, 0 },
+                                  Core::Point{ 0, 0 },
                                   buttonState);
 
         Log::Comment(L"Scroll up 19 more times, to the top");
@@ -223,18 +228,18 @@ namespace ControlUnitTests
             expectedTop--;
             interactivity->MouseWheel(modifiers,
                                       WHEEL_DELTA,
-                                      til::point{ 0, 0 },
+                                      Core::Point{ 0, 0 },
                                       buttonState);
         }
         Log::Comment(L"Scrolling up more should do nothing");
         expectedTop = 0;
         interactivity->MouseWheel(modifiers,
                                   WHEEL_DELTA,
-                                  til::point{ 0, 0 },
+                                  Core::Point{ 0, 0 },
                                   buttonState);
         interactivity->MouseWheel(modifiers,
                                   WHEEL_DELTA,
-                                  til::point{ 0, 0 },
+                                  Core::Point{ 0, 0 },
                                   buttonState);
 
         Log::Comment(L"Scroll down 21 more times, to the bottom");
@@ -244,7 +249,7 @@ namespace ControlUnitTests
             expectedTop++;
             interactivity->MouseWheel(modifiers,
                                       -WHEEL_DELTA,
-                                      til::point{ 0, 0 },
+                                      Core::Point{ 0, 0 },
                                       buttonState);
             Log::Comment(NoThrowString().Format(L"internal scrollbar pos:%f", interactivity->_internalScrollbarPosition));
         }
@@ -252,11 +257,11 @@ namespace ControlUnitTests
         expectedTop = 21;
         interactivity->MouseWheel(modifiers,
                                   -WHEEL_DELTA,
-                                  til::point{ 0, 0 },
+                                  Core::Point{ 0, 0 },
                                   buttonState);
         interactivity->MouseWheel(modifiers,
                                   -WHEEL_DELTA,
-                                  til::point{ 0, 0 },
+                                  Core::Point{ 0, 0 },
                                   buttonState);
     }
 
@@ -287,7 +292,7 @@ namespace ControlUnitTests
                                       WM_LBUTTONDOWN, //pointerUpdateKind
                                       0, // timestamp
                                       modifiers,
-                                      cursorPosition0);
+                                      cursorPosition0.to_core_point());
         Log::Comment(L"Verify that there's not yet a selection");
 
         VERIFY_IS_FALSE(core->HasSelection());
@@ -300,7 +305,7 @@ namespace ControlUnitTests
                                     WM_LBUTTONDOWN, //pointerUpdateKind
                                     modifiers,
                                     true, // focused,
-                                    cursorPosition1,
+                                    cursorPosition1.to_core_point(),
                                     true);
         Log::Comment(L"Verify that there's one selection");
         VERIFY_IS_TRUE(core->HasSelection());
@@ -313,7 +318,7 @@ namespace ControlUnitTests
                                     WM_LBUTTONDOWN, //pointerUpdateKind
                                     modifiers,
                                     true, // focused,
-                                    cursorPosition2,
+                                    cursorPosition2.to_core_point(),
                                     true);
         Log::Comment(L"Verify that there's now two selections (one on each row)");
         VERIFY_IS_TRUE(core->HasSelection());
@@ -323,7 +328,7 @@ namespace ControlUnitTests
         interactivity->PointerReleased(noMouseDown,
                                        WM_LBUTTONUP, //pointerUpdateKind
                                        modifiers,
-                                       cursorPosition2);
+                                       cursorPosition2.to_core_point());
         Log::Comment(L"Verify that there's still two selections");
         VERIFY_IS_TRUE(core->HasSelection());
         VERIFY_ARE_EQUAL(2u, core->_terminal->GetSelectionRects().size());
@@ -335,7 +340,7 @@ namespace ControlUnitTests
                                       WM_LBUTTONDOWN, //pointerUpdateKind
                                       0, // timestamp
                                       modifiers,
-                                      cursorPosition3);
+                                      cursorPosition3.to_core_point());
         Log::Comment(L"Verify that there's now no selection");
         VERIFY_IS_FALSE(core->HasSelection());
         VERIFY_ARE_EQUAL(0u, core->_terminal->GetSelectionRects().size());
@@ -347,7 +352,7 @@ namespace ControlUnitTests
                                     WM_LBUTTONDOWN, //pointerUpdateKind
                                     modifiers,
                                     true, // focused,
-                                    cursorPosition4,
+                                    cursorPosition4.to_core_point(),
                                     true);
         Log::Comment(L"Verify that there's now one selection");
         VERIFY_IS_TRUE(core->HasSelection());
@@ -377,7 +382,6 @@ namespace ControlUnitTests
         // For this test, don't use any modifiers
         const auto modifiers = ControlKeyStates();
         const Control::MouseButtonState leftMouseDown{ Control::MouseButtonState::IsLeftButtonDown };
-        const Control::MouseButtonState noMouseDown{};
 
         const til::size fontSize{ 9, 21 };
 
@@ -388,13 +392,13 @@ namespace ControlUnitTests
                                       WM_LBUTTONDOWN, //pointerUpdateKind
                                       0, // timestamp
                                       modifiers,
-                                      cursorPosition0);
+                                      cursorPosition0.to_core_point());
 
         Log::Comment(L"Verify that there's not yet a selection");
         VERIFY_IS_FALSE(core->HasSelection());
 
         VERIFY_IS_TRUE(interactivity->_singleClickTouchdownPos.has_value());
-        VERIFY_ARE_EQUAL(cursorPosition0, interactivity->_singleClickTouchdownPos.value());
+        VERIFY_ARE_EQUAL(cursorPosition0.to_core_point(), interactivity->_singleClickTouchdownPos.value());
 
         Log::Comment(L"Drag the mouse just a little");
         // move not quite a whole cell, but enough to start a selection
@@ -403,7 +407,7 @@ namespace ControlUnitTests
                                     WM_LBUTTONDOWN, //pointerUpdateKind
                                     modifiers,
                                     true, // focused,
-                                    cursorPosition1,
+                                    cursorPosition1.to_core_point(),
                                     true);
         Log::Comment(L"Verify that there's one selection");
         VERIFY_IS_TRUE(core->HasSelection());
@@ -419,7 +423,7 @@ namespace ControlUnitTests
         Log::Comment(L"Scroll up a line, with the left mouse button selected");
         interactivity->MouseWheel(modifiers,
                                   WHEEL_DELTA,
-                                  cursorPosition1,
+                                  cursorPosition1.to_core_point(),
                                   leftMouseDown);
 
         Log::Comment(L"Verify the location of the selection");
@@ -462,7 +466,7 @@ namespace ControlUnitTests
         // WHEEL_DELTA is 120, so we'll use 24 for now as the delta, just so the tests don't take forever.
 
         const int delta = WHEEL_DELTA / 5;
-        const til::point mousePos{ 0, 0 };
+        const Core::Point mousePos{ 0, 0 };
         Control::MouseButtonState state{};
 
         interactivity->MouseWheel(modifiers, delta, mousePos, state); // 1/5
@@ -528,7 +532,6 @@ namespace ControlUnitTests
         // For this test, don't use any modifiers
         const auto modifiers = ControlKeyStates();
         const Control::MouseButtonState leftMouseDown{ Control::MouseButtonState::IsLeftButtonDown };
-        const Control::MouseButtonState noMouseDown{};
 
         const til::size fontSize{ 9, 21 };
 
@@ -538,21 +541,21 @@ namespace ControlUnitTests
                                       WM_LBUTTONDOWN, //pointerUpdateKind
                                       0, // timestamp
                                       modifiers,
-                                      cursorPosition0);
+                                      cursorPosition0.to_core_point());
 
         Log::Comment(L"Verify that there's not yet a selection");
         VERIFY_IS_FALSE(core->HasSelection());
 
         VERIFY_IS_TRUE(interactivity->_singleClickTouchdownPos.has_value());
-        VERIFY_ARE_EQUAL(cursorPosition0, interactivity->_singleClickTouchdownPos.value());
+        VERIFY_ARE_EQUAL(cursorPosition0.to_core_point(), interactivity->_singleClickTouchdownPos.value());
 
         Log::Comment(L"Drag the mouse a lot. This simulates dragging the mouse real fast.");
-        const til::point cursorPosition1{ 6 + fontSize.width<int>() * 2, 0 };
+        const til::point cursorPosition1{ 6 + fontSize.width * 2, 0 };
         interactivity->PointerMoved(leftMouseDown,
                                     WM_LBUTTONDOWN, //pointerUpdateKind
                                     modifiers,
                                     true, // focused,
-                                    cursorPosition1,
+                                    cursorPosition1.to_core_point(),
                                     true);
         Log::Comment(L"Verify that there's one selection");
         VERIFY_IS_TRUE(core->HasSelection());
@@ -583,21 +586,21 @@ namespace ControlUnitTests
                                       WM_LBUTTONDOWN, //pointerUpdateKind
                                       0, // timestamp
                                       modifiers,
-                                      cursorPosition0);
+                                      cursorPosition0.to_core_point());
 
         Log::Comment(L"Verify that there's not yet a selection");
         VERIFY_IS_FALSE(core->HasSelection());
 
         VERIFY_IS_TRUE(interactivity->_singleClickTouchdownPos.has_value());
-        VERIFY_ARE_EQUAL(cursorPosition0, interactivity->_singleClickTouchdownPos.value());
+        VERIFY_ARE_EQUAL(cursorPosition0.to_core_point(), interactivity->_singleClickTouchdownPos.value());
 
         Log::Comment(L"Drag the mouse a lot. This simulates dragging the mouse real fast.");
-        const til::point cursorPosition1{ 6 + fontSize.width<int>() * 2, 0 };
+        const til::point cursorPosition1{ 6 + fontSize.width * 2, 0 };
         interactivity->PointerMoved(leftMouseDown,
                                     WM_LBUTTONDOWN, //pointerUpdateKind
                                     modifiers,
                                     true, // focused,
-                                    cursorPosition1,
+                                    cursorPosition1.to_core_point(),
                                     true);
         Log::Comment(L"Verify that there's one selection");
         VERIFY_IS_TRUE(core->HasSelection());
@@ -612,18 +615,18 @@ namespace ControlUnitTests
         interactivity->PointerReleased(noMouseDown,
                                        WM_LBUTTONUP,
                                        modifiers,
-                                       cursorPosition1);
+                                       cursorPosition1.to_core_point());
 
         VERIFY_ARE_EQUAL(expectedAnchor, core->_terminal->GetSelectionAnchor());
         VERIFY_ARE_EQUAL(expectedEnd, core->_terminal->GetSelectionEnd());
 
         Log::Comment(L"Simulate dragging the mouse into the control, without first clicking into the control");
-        const til::point cursorPosition2{ fontSize.width<int>() * 10, 0 };
+        const til::point cursorPosition2{ fontSize.width * 10, 0 };
         interactivity->PointerMoved(leftMouseDown,
                                     WM_LBUTTONDOWN, //pointerUpdateKind
                                     modifiers,
                                     true, // focused,
-                                    cursorPosition2,
+                                    cursorPosition2.to_core_point(),
                                     false);
 
         Log::Comment(L"The selection should be unchanged.");
@@ -686,7 +689,7 @@ namespace ControlUnitTests
             expectedTop--;
             interactivity->MouseWheel(modifiers,
                                       WHEEL_DELTA,
-                                      til::point{ 0, 0 },
+                                      Core::Point{ 0, 0 },
                                       noMouseDown);
         }
 
@@ -701,7 +704,7 @@ namespace ControlUnitTests
                                       WM_LBUTTONDOWN, //pointerUpdateKind
                                       0, // timestamp
                                       modifiers,
-                                      cursorPosition0);
+                                      cursorPosition0.to_core_point());
         Log::Comment(L"Verify that there's not yet a selection");
 
         VERIFY_IS_FALSE(core->HasSelection());
@@ -714,9 +717,85 @@ namespace ControlUnitTests
                                     WM_LBUTTONDOWN, //pointerUpdateKind
                                     modifiers,
                                     true, // focused,
-                                    cursorPosition1,
+                                    cursorPosition1.to_core_point(),
                                     true);
         Log::Comment(L"Verify that there's still no selection");
+        VERIFY_IS_FALSE(core->HasSelection());
+    }
+
+    void ControlInteractivityTests::IncrementCircularBufferWithSelection()
+    {
+        // This is a test for GH#10749
+        WEX::TestExecution::DisableVerifyExceptions disableVerifyExceptions{};
+
+        auto [settings, conn] = _createSettingsAndConnection();
+        auto [core, interactivity] = _createCoreAndInteractivity(*settings, *conn);
+        _standardInit(core, interactivity);
+
+        Log::Comment(L"Fill up the history buffer");
+        // Output lines equal to history size + viewport height to make sure we're
+        // at the point where outputting more lines causes circular incrementing
+        for (int i = 0; i < settings->HistorySize() + core->ViewHeight(); ++i)
+        {
+            conn->WriteInput(L"Foo\r\n");
+        }
+
+        // For this test, don't use any modifiers
+        const auto modifiers = ControlKeyStates();
+        const Control::MouseButtonState leftMouseDown{ Control::MouseButtonState::IsLeftButtonDown };
+
+        const til::size fontSize{ 9, 21 };
+
+        Log::Comment(L"Click on the terminal");
+        const til::point terminalPosition0{ 5, 5 };
+        const til::point cursorPosition0{ terminalPosition0 * fontSize };
+        interactivity->PointerPressed(leftMouseDown,
+                                      WM_LBUTTONDOWN, //pointerUpdateKind
+                                      0, // timestamp
+                                      modifiers,
+                                      cursorPosition0.to_core_point());
+
+        Log::Comment(L"Verify that there's not yet a selection");
+        VERIFY_IS_FALSE(core->HasSelection());
+
+        VERIFY_IS_TRUE(interactivity->_singleClickTouchdownPos.has_value());
+        VERIFY_ARE_EQUAL(cursorPosition0.to_core_point(), interactivity->_singleClickTouchdownPos.value());
+
+        Log::Comment(L"Drag the mouse just a little");
+        // move not quite a whole cell, but enough to start a selection
+        const til::point cursorPosition1{ cursorPosition0 + til::point{ 6, 0 } };
+        interactivity->PointerMoved(leftMouseDown,
+                                    WM_LBUTTONDOWN, //pointerUpdateKind
+                                    modifiers,
+                                    true, // focused,
+                                    cursorPosition1.to_core_point(),
+                                    true);
+        Log::Comment(L"Verify that there's one selection");
+        VERIFY_IS_TRUE(core->HasSelection());
+        VERIFY_ARE_EQUAL(1u, core->_terminal->GetSelectionRects().size());
+
+        Log::Comment(L"Verify the location of the selection");
+        // The viewport is on row (historySize + 5), so the selection will be on:
+        // {(5, (historySize+5))+(0, 21)} to {(5, (historySize+5))+(0, 21)}
+        COORD expectedAnchor{ 5, gsl::narrow_cast<SHORT>(settings->HistorySize()) + 5 };
+        VERIFY_ARE_EQUAL(expectedAnchor, core->_terminal->GetSelectionAnchor());
+        VERIFY_ARE_EQUAL(expectedAnchor, core->_terminal->GetSelectionEnd());
+
+        Log::Comment(L"Output a line of text");
+        conn->WriteInput(L"Foo\r\n");
+
+        Log::Comment(L"Verify the location of the selection");
+        // The selection should now be 1 row lower
+        expectedAnchor.Y -= 1;
+        VERIFY_ARE_EQUAL(expectedAnchor, core->_terminal->GetSelectionAnchor());
+        VERIFY_ARE_EQUAL(expectedAnchor, core->_terminal->GetSelectionEnd());
+
+        // Output enough text for the selection to get pushed off the buffer
+        for (int i = 0; i < settings->HistorySize() + core->ViewHeight(); ++i)
+        {
+            conn->WriteInput(L"Foo\r\n");
+        }
+        // Verify that the selection got reset
         VERIFY_IS_FALSE(core->HasSelection());
     }
 }

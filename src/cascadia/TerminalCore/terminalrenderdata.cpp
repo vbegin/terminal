@@ -4,6 +4,7 @@
 #include "pch.h"
 #include "Terminal.hpp"
 #include <DefaultSettings.h>
+
 using namespace Microsoft::Terminal::Core;
 using namespace Microsoft::Console::Types;
 using namespace Microsoft::Console::Render;
@@ -37,31 +38,6 @@ void Terminal::SetFontInfo(const FontInfo& fontInfo)
     _fontInfo = fontInfo;
 }
 
-const TextAttribute Terminal::GetDefaultBrushColors() noexcept
-{
-    return TextAttribute{};
-}
-
-std::pair<COLORREF, COLORREF> Terminal::GetAttributeColors(const TextAttribute& attr) const noexcept
-{
-    _blinkingState.RecordBlinkingUsage(attr);
-    auto colors = attr.CalculateRgbColors(
-        _colorTable,
-        _defaultFg,
-        _defaultBg,
-        _screenReversed,
-        _blinkingState.IsBlinkingFaint(),
-        _intenseIsBright);
-    colors.first |= 0xff000000;
-    // We only care about alpha for the default BG (which enables acrylic)
-    // If the bg isn't the default bg color, or reverse video is enabled, make it fully opaque.
-    if (!attr.BackgroundIsDefault() || (attr.IsReverseVideo() ^ _screenReversed))
-    {
-        colors.second |= 0xff000000;
-    }
-    return colors;
-}
-
 COORD Terminal::GetCursorPosition() const noexcept
 {
     const auto& cursor = _buffer->GetCursor();
@@ -93,11 +69,6 @@ ULONG Terminal::GetCursorHeight() const noexcept
 CursorType Terminal::GetCursorStyle() const noexcept
 {
     return _buffer->GetCursor().GetType();
-}
-
-COLORREF Terminal::GetCursorColor() const noexcept
-{
-    return _buffer->GetCursor().GetColor();
 }
 
 bool Terminal::IsCursorDoubleWidth() const
@@ -136,7 +107,7 @@ const std::wstring Microsoft::Terminal::Core::Terminal::GetHyperlinkCustomId(uin
 const std::vector<size_t> Terminal::GetPatternId(const COORD location) const noexcept
 {
     // Look through our interval tree for this location
-    const auto intervals = _patternIntervalTree.findOverlapping(COORD{ location.X + 1, location.Y }, location);
+    const auto intervals = _patternIntervalTree.findOverlapping(til::point{ location.X + 1, location.Y }, til::point{ location });
     if (intervals.size() == 0)
     {
         return {};
@@ -151,6 +122,11 @@ const std::vector<size_t> Terminal::GetPatternId(const COORD location) const noe
         return result;
     }
     return {};
+}
+
+std::pair<COLORREF, COLORREF> Terminal::GetAttributeColors(const TextAttribute& attr) const noexcept
+{
+    return _renderSettings.GetAttributeColors(attr);
 }
 
 std::vector<Microsoft::Console::Types::Viewport> Terminal::GetSelectionRects() noexcept
@@ -206,7 +182,7 @@ void Terminal::SelectNewRegion(const COORD coordStart, const COORD coordEnd)
     realCoordEnd.Y -= gsl::narrow<short>(_VisibleStartIndex());
 
     SetSelectionAnchor(realCoordStart);
-    SetSelectionEnd(realCoordEnd, SelectionExpansionMode::Cell);
+    SetSelectionEnd(realCoordEnd, SelectionExpansion::Char);
 }
 
 const std::wstring_view Terminal::GetConsoleTitle() const noexcept
@@ -233,6 +209,9 @@ catch (...)
 void Terminal::LockConsole() noexcept
 {
     _readWriteLock.lock();
+#ifndef NDEBUG
+    _lastLocker = GetCurrentThreadId();
+#endif
 }
 
 // Method Description:
@@ -242,11 +221,11 @@ void Terminal::UnlockConsole() noexcept
     _readWriteLock.unlock();
 }
 
-// Method Description:
-// - Returns whether the screen is inverted;
-// Return Value:
-// - false.
-bool Terminal::IsScreenReversed() const noexcept
+const bool Terminal::IsUiaDataInitialized() const noexcept
 {
-    return _screenReversed;
+    // GH#11135: Windows Terminal needs to create and return an automation peer
+    // when a screen reader requests it. However, the terminal might not be fully
+    // initialized yet. So we use this to check if any crucial components of
+    // UiaData are not yet initialized.
+    return !!_buffer;
 }

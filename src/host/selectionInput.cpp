@@ -628,7 +628,7 @@ bool Selection::_HandleColorSelection(const INPUT_KEY_INFO* const pInputKeyInfo)
     const WORD wVirtualKeyCode = pInputKeyInfo->GetVirtualKey();
 
     //  It's a numeric key,  a text mode buffer and the color selection regkey is set,
-    //  then check to see if the user want's to color the selection or search and
+    //  then check to see if the user wants to color the selection or search and
     //  highlight the selection.
     bool fAltPressed = pInputKeyInfo->IsAltPressed();
     bool fShiftPressed = pInputKeyInfo->IsShiftPressed();
@@ -661,13 +661,15 @@ bool Selection::_HandleColorSelection(const INPUT_KEY_INFO* const pInputKeyInfo)
     if (fAltPressed || fCtrlPressed)
     {
         TextAttribute selectionAttr;
-        const BYTE colorIndex = gsl::narrow_cast<BYTE>(wVirtualKeyCode - '0' + 6);
+        // The key number corresponds to the Windows color table order, so the value
+        // need to be transposed to obtain the index in an ANSI-compatible order.
+        const auto colorIndex = TextColor::TransposeLegacyIndex(wVirtualKeyCode - '0' + 6);
 
         if (fCtrlPressed)
         {
             //  Setting background color.  Set fg color to black.
             selectionAttr.SetIndexedBackground256(colorIndex);
-            selectionAttr.SetIndexedForeground256(0);
+            selectionAttr.SetIndexedForeground256(TextColor::DARK_BLACK);
         }
         else
         {
