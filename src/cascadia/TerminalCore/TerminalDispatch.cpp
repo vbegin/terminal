@@ -442,6 +442,58 @@ bool TerminalDispatch::ResetMode(const DispatchTypes::ModeParams param)
     return _ModeParamsHelper(param, false);
 }
 
+// Routine Description:
+// - DSR - Reports status of a console property back to the STDIN based on the type of status requested.
+//       - This particular routine responds to ANSI status patterns only (CSI # n), not the DEC format (CSI ? # n)
+// Arguments:
+// - statusType - ANSI status type indicating what property we should report back
+// Return Value:
+// - True if handled successfully. False otherwise.
+bool TerminalDispatch::DeviceStatusReport(const DispatchTypes::AnsiStatusType statusType)
+{
+    bool success = false;
+
+    switch (statusType)
+    {
+    case DispatchTypes::AnsiStatusType::OS_OperatingStatus:
+        success = _OperatingStatus();
+        break;
+    case DispatchTypes::AnsiStatusType::CPR_CursorPositionReport:
+        success = _CursorPositionReport();
+        break;
+    }
+
+    return success;
+}
+
+// Routine Description:
+// - DSR-OS - Reports the operating status back to the input channel
+// Arguments:
+// - <none>
+// Return Value:
+// - True if handled successfully. False otherwise.
+bool TerminalDispatch::_OperatingStatus() const
+{
+    // We always report a good operating condition.
+    return _WriteResponse(L"\x1b[0n");
+}
+
+// Routine Description:
+// - DSR-CPR - Reports the current cursor position within the viewport back to the input channel
+// Arguments:
+// - <none>
+// Return Value:
+// - True if handled successfully. False otherwise.
+bool TerminalDispatch::_CursorPositionReport() const
+{
+    // Now send it back into the input channel of the console.
+    // First format the response string.
+    const auto pos = _terminalApi.GetCursorPosition();
+    // VT has origin at 1,1 where as we use 0,0 internally
+    const auto response = wil::str_printf<std::wstring>(L"\x1b[%d;%dR", pos.Y + 1, pos.X + 1);
+    return _WriteResponse(response);
+}
+
 // Method Description:
 // - Start a hyperlink
 // Arguments:
@@ -546,6 +598,18 @@ bool TerminalDispatch::DoConEmuAction(const std::wstring_view string)
 }
 
 // Routine Description:
+// - Helper to send a string reply to the input stream of the console.
+// - Used by various commands where the program attached would like a reply to one of the commands issued.
+// Arguments:
+// - reply - The reply string to transmit back to the input stream
+// Return Value:
+// - True if the string was sent to the connected application. False otherwise.
+bool TerminalDispatch::_WriteResponse(const std::wstring_view reply) const
+{
+    return _terminalApi.ReturnResponse(reply);
+}
+
+// Routine Description:
 // - Support routine for routing private mode parameters to be set/reset as flags
 // Arguments:
 // - param - mode parameter to set/reset
@@ -593,6 +657,9 @@ bool TerminalDispatch::_ModeParamsHelper(const DispatchTypes::ModeParams param, 
         break;
     case DispatchTypes::ModeParams::W32IM_Win32InputMode:
         success = EnableWin32InputMode(enable);
+        break;
+    case DispatchTypes::ModeParams::ASB_AlternateScreenBuffer:
+        success = enable ? UseAlternateScreenBuffer() : UseMainScreenBuffer();
         break;
     default:
         // If no functions to call, overall dispatch was a failure.
@@ -720,5 +787,86 @@ bool TerminalDispatch::HardReset()
     // Delete all current tab stops and reapply
     _ResetTabStops();
 
+    return true;
+}
+
+// Routine Description:
+// - DECSC - Saves the current "cursor state" into a memory buffer. This
+//   includes the cursor position, origin mode, graphic rendition, and
+//   active character set.
+// Arguments:
+// - <none>
+// Return Value:
+// - True.
+bool TerminalDispatch::CursorSaveState()
+{
+    // TODO GH#3849: When de-duplicating this, the AdaptDispatch version of this
+    // is more elaborate.
+    const auto attributes = _terminalApi.GetTextAttributes();
+    COORD coordCursor = _terminalApi.GetCursorPosition();
+    // The cursor is given to us by the API as relative to current viewport top.
+
+    // VT is also 1 based, not 0 based, so correct by 1.
+    auto& savedCursorState = _savedCursorState.at(_usingAltBuffer);
+    savedCursorState.Column = coordCursor.X + 1;
+    savedCursorState.Row = coordCursor.Y + 1;
+    savedCursorState.Attributes = attributes;
+
+    return true;
+}
+
+// Routine Description:
+// - DECRC - Restores a saved "cursor state" from the DECSC command back into
+//   the console state. This includes the cursor position, origin mode, graphic
+//   rendition, and active character set.
+// Arguments:
+// - <none>
+// Return Value:
+// - True.
+bool TerminalDispatch::CursorRestoreState()
+{
+    // TODO GH#3849: When de-duplicating this, the AdaptDispatch version of this
+    // is more elaborate.
+    auto& savedCursorState = _savedCursorState.at(_usingAltBuffer);
+
+    auto row = savedCursorState.Row;
+    const auto col = savedCursorState.Column;
+
+    // The saved coordinates are always absolute, so we need reset the origin mode temporarily.
+    CursorPosition(row, col);
+
+    // Restore text attributes.
+    _terminalApi.SetTextAttributes(savedCursorState.Attributes);
+
+    return true;
+}
+
+// - ASBSET - Creates and swaps to the alternate screen buffer. In virtual terminals, there exists both a "main"
+//     screen buffer and an alternate. ASBSET creates a new alternate, and switches to it. If there is an already
+//     existing alternate, it is discarded.
+// Arguments:
+// - None
+// Return Value:
+// - True.
+bool TerminalDispatch::UseAlternateScreenBuffer()
+{
+    CursorSaveState();
+    _terminalApi.UseAlternateScreenBuffer();
+    _usingAltBuffer = true;
+    return true;
+}
+
+// Routine Description:
+// - ASBRST - From the alternate buffer, returns to the main screen buffer.
+//     From the main screen buffer, does nothing. The alternate is discarded.
+// Arguments:
+// - None
+// Return Value:
+// - True.
+bool TerminalDispatch::UseMainScreenBuffer()
+{
+    _terminalApi.UseMainScreenBuffer();
+    _usingAltBuffer = false;
+    CursorRestoreState();
     return true;
 }

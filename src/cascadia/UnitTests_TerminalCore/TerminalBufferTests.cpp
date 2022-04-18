@@ -4,11 +4,11 @@
 #include "pch.h"
 #include <WexTestClass.h>
 
-#include "../renderer/inc/DummyRenderTarget.hpp"
+#include "../renderer/inc/DummyRenderer.hpp"
 #include "../cascadia/TerminalCore/Terminal.hpp"
 #include "MockTermSettings.h"
 #include "consoletaeftemplates.hpp"
-#include "TestUtils.h"
+#include "../../inc/TestUtils.h"
 
 using namespace winrt::Microsoft::Terminal::Core;
 using namespace Microsoft::Terminal::Core;
@@ -57,12 +57,14 @@ class TerminalCoreUnitTests::TerminalBufferTests final
     {
         // STEP 1: Set up the Terminal
         term = std::make_unique<Terminal>();
-        term->Create({ TerminalViewWidth, TerminalViewHeight }, TerminalHistoryLength, emptyRT);
+        emptyRenderer = std::make_unique<DummyRenderer>(term.get());
+        term->Create({ TerminalViewWidth, TerminalViewHeight }, TerminalHistoryLength, *emptyRenderer);
         return true;
     }
 
     TEST_METHOD_CLEANUP(MethodCleanup)
     {
+        emptyRenderer = nullptr;
         term = nullptr;
         return true;
     }
@@ -71,13 +73,13 @@ private:
     void _SetTabStops(std::list<short> columns, bool replace);
     std::list<short> _GetTabStops();
 
-    DummyRenderTarget emptyRT;
+    std::unique_ptr<DummyRenderer> emptyRenderer;
     std::unique_ptr<Terminal> term;
 };
 
 void TerminalBufferTests::TestSimpleBufferWriting()
 {
-    auto& termTb = *term->_buffer;
+    auto& termTb = *term->_mainBuffer;
     auto& termSm = *term->_stateMachine;
     const auto initialView = term->GetViewport();
 
@@ -96,7 +98,7 @@ void TerminalBufferTests::TestSimpleBufferWriting()
 
 void TerminalBufferTests::TestWrappingCharByChar()
 {
-    auto& termTb = *term->_buffer;
+    auto& termTb = *term->_mainBuffer;
     auto& termSm = *term->_stateMachine;
     const auto initialView = term->GetViewport();
     auto& cursor = termTb.GetCursor();
@@ -135,7 +137,7 @@ void TerminalBufferTests::TestWrappingCharByChar()
 
 void TerminalBufferTests::TestWrappingALongString()
 {
-    auto& termTb = *term->_buffer;
+    auto& termTb = *term->_mainBuffer;
     auto& termSm = *term->_stateMachine;
     const auto initialView = term->GetViewport();
     auto& cursor = termTb.GetCursor();
@@ -169,7 +171,7 @@ void TerminalBufferTests::TestWrappingALongString()
 
 void TerminalBufferTests::DontSnapToOutputTest()
 {
-    auto& termTb = *term->_buffer;
+    auto& termTb = *term->_mainBuffer;
     auto& termSm = *term->_stateMachine;
     const auto initialView = term->GetViewport();
 
@@ -251,7 +253,7 @@ void TerminalBufferTests::DontSnapToOutputTest()
 
 void TerminalBufferTests::_SetTabStops(std::list<short> columns, bool replace)
 {
-    auto& termTb = *term->_buffer;
+    auto& termTb = *term->_mainBuffer;
     auto& termSm = *term->_stateMachine;
     auto& cursor = termTb.GetCursor();
 
@@ -273,7 +275,7 @@ void TerminalBufferTests::_SetTabStops(std::list<short> columns, bool replace)
 std::list<short> TerminalBufferTests::_GetTabStops()
 {
     std::list<short> columns;
-    auto& termTb = *term->_buffer;
+    auto& termTb = *term->_mainBuffer;
     auto& termSm = *term->_stateMachine;
     const auto initialView = term->GetViewport();
     const auto lastColumn = initialView.RightInclusive();
@@ -319,7 +321,7 @@ void TerminalBufferTests::TestResetClearTabStops()
 
 void TerminalBufferTests::TestAddTabStop()
 {
-    auto& termTb = *term->_buffer;
+    auto& termTb = *term->_mainBuffer;
     auto& termSm = *term->_stateMachine;
     auto& cursor = termTb.GetCursor();
 
@@ -364,7 +366,7 @@ void TerminalBufferTests::TestAddTabStop()
 
 void TerminalBufferTests::TestClearTabStop()
 {
-    auto& termTb = *term->_buffer;
+    auto& termTb = *term->_mainBuffer;
     auto& termSm = *term->_stateMachine;
     auto& cursor = termTb.GetCursor();
 
@@ -473,7 +475,7 @@ void TerminalBufferTests::TestClearTabStop()
 
 void TerminalBufferTests::TestGetForwardTab()
 {
-    auto& termTb = *term->_buffer;
+    auto& termTb = *term->_mainBuffer;
     auto& termSm = *term->_stateMachine;
     const auto initialView = term->GetViewport();
     auto& cursor = termTb.GetCursor();
@@ -543,7 +545,7 @@ void TerminalBufferTests::TestGetForwardTab()
 
 void TerminalBufferTests::TestGetReverseTab()
 {
-    auto& termTb = *term->_buffer;
+    auto& termTb = *term->_mainBuffer;
     auto& termSm = *term->_stateMachine;
     auto& cursor = termTb.GetCursor();
 

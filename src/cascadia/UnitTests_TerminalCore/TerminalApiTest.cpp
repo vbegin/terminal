@@ -6,7 +6,7 @@
 
 #include "../cascadia/TerminalCore/Terminal.hpp"
 #include "MockTermSettings.h"
-#include "../renderer/inc/DummyRenderTarget.hpp"
+#include "../renderer/inc/DummyRenderer.hpp"
 #include "consoletaeftemplates.hpp"
 
 using namespace winrt::Microsoft::Terminal::Core;
@@ -49,8 +49,8 @@ using namespace TerminalCoreUnitTests;
 void TerminalApiTest::SetColorTableEntry()
 {
     Terminal term;
-    DummyRenderTarget emptyRT;
-    term.Create({ 100, 100 }, 0, emptyRT);
+    DummyRenderer renderer{ &term };
+    term.Create({ 100, 100 }, 0, renderer);
 
     auto settings = winrt::make<MockTermSettings>(100, 100, 100);
     term.UpdateSettings(settings);
@@ -67,9 +67,9 @@ void TerminalApiTest::SetColorTableEntry()
 // PrintString() is called with more code units than the buffer width.
 void TerminalApiTest::PrintStringOfSurrogatePairs()
 {
-    DummyRenderTarget renderTarget;
     Terminal term;
-    term.Create({ 100, 100 }, 3, renderTarget);
+    DummyRenderer renderer{ &term };
+    term.Create({ 100, 100 }, 3, renderer);
 
     std::wstring text;
     text.reserve(600);
@@ -135,42 +135,42 @@ void TerminalApiTest::CursorVisibility()
 {
     // GH#3093 - Cursor Visibility and On states shouldn't affect each other
     Terminal term;
-    DummyRenderTarget emptyRT;
-    term.Create({ 100, 100 }, 0, emptyRT);
+    DummyRenderer renderer{ &term };
+    term.Create({ 100, 100 }, 0, renderer);
 
-    VERIFY_IS_TRUE(term._buffer->GetCursor().IsVisible());
-    VERIFY_IS_TRUE(term._buffer->GetCursor().IsOn());
-    VERIFY_IS_TRUE(term._buffer->GetCursor().IsBlinkingAllowed());
+    VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsVisible());
+    VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsOn());
+    VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsBlinkingAllowed());
 
     term.SetCursorOn(false);
-    VERIFY_IS_TRUE(term._buffer->GetCursor().IsVisible());
-    VERIFY_IS_FALSE(term._buffer->GetCursor().IsOn());
-    VERIFY_IS_TRUE(term._buffer->GetCursor().IsBlinkingAllowed());
+    VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsVisible());
+    VERIFY_IS_FALSE(term._mainBuffer->GetCursor().IsOn());
+    VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsBlinkingAllowed());
 
     term.SetCursorOn(true);
-    VERIFY_IS_TRUE(term._buffer->GetCursor().IsVisible());
-    VERIFY_IS_TRUE(term._buffer->GetCursor().IsOn());
-    VERIFY_IS_TRUE(term._buffer->GetCursor().IsBlinkingAllowed());
+    VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsVisible());
+    VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsOn());
+    VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsBlinkingAllowed());
 
     term.SetCursorVisibility(false);
-    VERIFY_IS_FALSE(term._buffer->GetCursor().IsVisible());
-    VERIFY_IS_TRUE(term._buffer->GetCursor().IsOn());
-    VERIFY_IS_TRUE(term._buffer->GetCursor().IsBlinkingAllowed());
+    VERIFY_IS_FALSE(term._mainBuffer->GetCursor().IsVisible());
+    VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsOn());
+    VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsBlinkingAllowed());
 
     term.SetCursorOn(false);
-    VERIFY_IS_FALSE(term._buffer->GetCursor().IsVisible());
-    VERIFY_IS_FALSE(term._buffer->GetCursor().IsOn());
-    VERIFY_IS_TRUE(term._buffer->GetCursor().IsBlinkingAllowed());
+    VERIFY_IS_FALSE(term._mainBuffer->GetCursor().IsVisible());
+    VERIFY_IS_FALSE(term._mainBuffer->GetCursor().IsOn());
+    VERIFY_IS_TRUE(term._mainBuffer->GetCursor().IsBlinkingAllowed());
 }
 
 void TerminalApiTest::CursorVisibilityViaStateMachine()
 {
     // This is a nearly literal copy-paste of ScreenBufferTests::TestCursorIsOn, adapted for the Terminal
     Terminal term;
-    DummyRenderTarget emptyRT;
-    term.Create({ 100, 100 }, 0, emptyRT);
+    DummyRenderer renderer{ &term };
+    term.Create({ 100, 100 }, 0, renderer);
 
-    auto& tbi = *(term._buffer);
+    auto& tbi = *(term._mainBuffer);
     auto& stateMachine = *(term._stateMachine);
     auto& cursor = tbi.GetCursor();
 
@@ -218,11 +218,11 @@ void TerminalApiTest::CursorVisibilityViaStateMachine()
 
 void TerminalApiTest::CheckDoubleWidthCursor()
 {
-    DummyRenderTarget renderTarget;
     Terminal term;
-    term.Create({ 100, 100 }, 0, renderTarget);
+    DummyRenderer renderer{ &term };
+    term.Create({ 100, 100 }, 0, renderer);
 
-    auto& tbi = *(term._buffer);
+    auto& tbi = *(term._mainBuffer);
     auto& stateMachine = *(term._stateMachine);
     auto& cursor = tbi.GetCursor();
 
@@ -263,10 +263,10 @@ void TerminalCoreUnitTests::TerminalApiTest::AddHyperlink()
     // This is a nearly literal copy-paste of ScreenBufferTests::TestAddHyperlink, adapted for the Terminal
 
     Terminal term;
-    DummyRenderTarget emptyRT;
-    term.Create({ 100, 100 }, 0, emptyRT);
+    DummyRenderer renderer{ &term };
+    term.Create({ 100, 100 }, 0, renderer);
 
-    auto& tbi = *(term._buffer);
+    auto& tbi = *(term._mainBuffer);
     auto& stateMachine = *(term._stateMachine);
 
     // Process the opening osc 8 sequence
@@ -289,10 +289,10 @@ void TerminalCoreUnitTests::TerminalApiTest::AddHyperlinkCustomId()
     // This is a nearly literal copy-paste of ScreenBufferTests::TestAddHyperlinkCustomId, adapted for the Terminal
 
     Terminal term;
-    DummyRenderTarget emptyRT;
-    term.Create({ 100, 100 }, 0, emptyRT);
+    DummyRenderer renderer{ &term };
+    term.Create({ 100, 100 }, 0, renderer);
 
-    auto& tbi = *(term._buffer);
+    auto& tbi = *(term._mainBuffer);
     auto& stateMachine = *(term._stateMachine);
 
     // Process the opening osc 8 sequence
@@ -317,10 +317,10 @@ void TerminalCoreUnitTests::TerminalApiTest::AddHyperlinkCustomIdDifferentUri()
     // This is a nearly literal copy-paste of ScreenBufferTests::TestAddHyperlinkCustomId, adapted for the Terminal
 
     Terminal term;
-    DummyRenderTarget emptyRT;
-    term.Create({ 100, 100 }, 0, emptyRT);
+    DummyRenderer renderer{ &term };
+    term.Create({ 100, 100 }, 0, renderer);
 
-    auto& tbi = *(term._buffer);
+    auto& tbi = *(term._mainBuffer);
     auto& stateMachine = *(term._stateMachine);
 
     // Process the opening osc 8 sequence
@@ -345,8 +345,8 @@ void TerminalCoreUnitTests::TerminalApiTest::AddHyperlinkCustomIdDifferentUri()
 void TerminalCoreUnitTests::TerminalApiTest::SetTaskbarProgress()
 {
     Terminal term;
-    DummyRenderTarget emptyRT;
-    term.Create({ 100, 100 }, 0, emptyRT);
+    DummyRenderer renderer{ &term };
+    term.Create({ 100, 100 }, 0, renderer);
 
     auto& stateMachine = *(term._stateMachine);
 
@@ -416,8 +416,8 @@ void TerminalCoreUnitTests::TerminalApiTest::SetTaskbarProgress()
 void TerminalCoreUnitTests::TerminalApiTest::SetWorkingDirectory()
 {
     Terminal term;
-    DummyRenderTarget emptyRT;
-    term.Create({ 100, 100 }, 0, emptyRT);
+    DummyRenderer renderer{ &term };
+    term.Create({ 100, 100 }, 0, renderer);
 
     auto& stateMachine = *(term._stateMachine);
 

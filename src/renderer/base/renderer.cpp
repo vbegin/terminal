@@ -34,9 +34,8 @@ Renderer::Renderer(const RenderSettings& renderSettings,
                    const size_t cEngines,
                    std::unique_ptr<RenderThread> thread) :
     _renderSettings(renderSettings),
-    _pData(THROW_HR_IF_NULL(E_INVALIDARG, pData)),
-    _pThread{ std::move(thread) },
-    _viewport{ pData->GetViewport() }
+    _pData(pData),
+    _pThread{ std::move(thread) }
 {
     for (size_t i = 0; i < cEngines; i++)
     {
@@ -457,14 +456,14 @@ void Renderer::TriggerScroll(const COORD* const pcoordDelta)
 // - <none>
 // Return Value:
 // - <none>
-void Renderer::TriggerCircling()
+void Renderer::TriggerFlush(const bool circling)
 {
     const auto rects = _GetSelectionRects();
 
     FOREACH_ENGINE(pEngine)
     {
         bool fEngineRequestsRepaint = false;
-        HRESULT hr = pEngine->InvalidateCircling(&fEngineRequestsRepaint);
+        HRESULT hr = pEngine->InvalidateFlush(circling, &fEngineRequestsRepaint);
         LOG_IF_FAILED(hr);
 
         LOG_IF_FAILED(pEngine->InvalidateSelection(rects));
@@ -491,6 +490,14 @@ void Renderer::TriggerTitleChange()
         LOG_IF_FAILED(pEngine->InvalidateTitle(newTitle));
     }
     NotifyPaintFrame();
+}
+
+void Renderer::TriggerNewTextNotification(const std::wstring_view newText)
+{
+    FOREACH_ENGINE(pEngine)
+    {
+        LOG_IF_FAILED(pEngine->NotifyNewText(newText));
+    }
 }
 
 // Routine Description:
@@ -623,7 +630,15 @@ bool Renderer::IsGlyphWideByFont(const std::wstring_view glyph)
 // - <none>
 void Renderer::EnablePainting()
 {
-    _pThread->EnablePainting();
+    // When the renderer is constructed, the initial viewport won't be available yet,
+    // but once EnablePainting is called it should be safe to retrieve.
+    _viewport = _pData->GetViewport();
+
+    // When running the unit tests, we may be using a render without a render thread.
+    if (_pThread)
+    {
+        _pThread->EnablePainting();
+    }
 }
 
 // Routine Description:
@@ -677,8 +692,7 @@ void Renderer::_PaintBufferOutput(_In_ IRenderEngine* const pEngine)
 
     for (const auto& dirtyRect : dirtyAreas)
     {
-        // Shortcut: don't bother redrawing if the width is 0.
-        if (dirtyRect.left == dirtyRect.right)
+        if (!dirtyRect)
         {
             continue;
         }

@@ -21,6 +21,8 @@ namespace Microsoft::Terminal::Core
 
         virtual void PrintString(std::wstring_view string) = 0;
 
+        virtual bool ReturnResponse(std::wstring_view responseString) = 0;
+
         virtual TextAttribute GetTextAttributes() const = 0;
         virtual void SetTextAttributes(const TextAttribute& attrs) = 0;
 
@@ -66,6 +68,9 @@ namespace Microsoft::Terminal::Core
 
         virtual void PushGraphicsRendition(const ::Microsoft::Console::VirtualTerminal::VTParameters options) = 0;
         virtual void PopGraphicsRendition() = 0;
+
+        virtual void UseAlternateScreenBuffer() = 0;
+        virtual void UseMainScreenBuffer() = 0;
 
     protected:
         ITerminalApi() = default;
