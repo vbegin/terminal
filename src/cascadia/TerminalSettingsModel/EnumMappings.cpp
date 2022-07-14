@@ -31,6 +31,7 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
 {
     // Global Settings
     DEFINE_ENUM_MAP(winrt::Windows::UI::Xaml::ElementTheme, ElementTheme);
+    DEFINE_ENUM_MAP(Model::NewTabPosition, NewTabPosition);
     DEFINE_ENUM_MAP(winrt::Microsoft::UI::Xaml::Controls::TabViewWidthMode, TabViewWidthMode);
     DEFINE_ENUM_MAP(Model::FirstWindowPreference, FirstWindowPreference);
     DEFINE_ENUM_MAP(Model::LaunchMode, LaunchMode);
@@ -50,7 +51,7 @@ namespace winrt::Microsoft::Terminal::Settings::Model::implementation
     // creates a FontWeight object, but we need to use the uint16_t value.
     winrt::Windows::Foundation::Collections::IMap<winrt::hstring, uint16_t> EnumMappings::FontWeight()
     {
-        static IMap<winrt::hstring, uint16_t> enumMap = []() {
+        static auto enumMap = []() {
             auto map = single_threaded_map<winrt::hstring, uint16_t>();
             for (auto [enumStr, enumVal] : JsonUtils::ConversionTrait<Windows::UI::Text::FontWeight>::mappings)
             {

@@ -114,8 +114,11 @@ namespace winrt::TerminalApp::implementation
         bool OnDirectKeyEvent(const uint32_t vkey, const uint8_t scanCode, const bool down);
 
         void CloseWindow(Microsoft::Terminal::Settings::Model::LaunchPosition position);
+        void WindowVisibilityChanged(const bool showOrHide);
 
         winrt::TerminalApp::TaskbarState TaskbarState();
+        winrt::Windows::UI::Xaml::Media::Brush TitlebarBrush();
+        void WindowActivated(const bool activated);
 
         bool GetMinimizeToNotificationArea();
         bool GetAlwaysShowNotificationIcon();
@@ -126,8 +129,19 @@ namespace winrt::TerminalApp::implementation
 
         Windows::Foundation::Collections::IMapView<Microsoft::Terminal::Control::KeyChord, Microsoft::Terminal::Settings::Model::Command> GlobalHotkeys();
 
+        Microsoft::Terminal::Settings::Model::Theme Theme();
+
         // -------------------------------- WinRT Events ---------------------------------
-        TYPED_EVENT(RequestedThemeChanged, winrt::Windows::Foundation::IInspectable, winrt::Windows::UI::Xaml::ElementTheme);
+        // PropertyChanged is surprisingly not a typed event, so we'll define that one manually.
+        // Usually we'd just do
+        //    WINRT_CALLBACK(PropertyChanged, Windows::UI::Xaml::Data::PropertyChangedEventHandler);
+        //
+        // But what we're doing here is exposing the Page's PropertyChanged _as
+        // our own event_. It's a FORWARDED_CALLBACK, essentially.
+        winrt::event_token PropertyChanged(Windows::UI::Xaml::Data::PropertyChangedEventHandler const& handler) { return _root->PropertyChanged(handler); }
+        void PropertyChanged(winrt::event_token const& token) { _root->PropertyChanged(token); }
+
+        TYPED_EVENT(RequestedThemeChanged, winrt::Windows::Foundation::IInspectable, winrt::Microsoft::Terminal::Settings::Model::Theme);
         TYPED_EVENT(SettingsChanged, winrt::Windows::Foundation::IInspectable, winrt::Windows::Foundation::IInspectable);
         TYPED_EVENT(SystemMenuChangeRequested, winrt::Windows::Foundation::IInspectable, winrt::TerminalApp::SystemMenuChangeArgs);
 
@@ -182,8 +196,6 @@ namespace winrt::TerminalApp::implementation
         void _ReloadSettings();
         void _OpenSettingsUI();
 
-        void _ApplyTheme(const Windows::UI::Xaml::ElementTheme& newTheme);
-
         bool _hasCommandLineArguments{ false };
         bool _hasSettingsStartupActions{ false };
         std::vector<Microsoft::Terminal::Settings::Model::SettingsLoadWarnings> _warnings;
@@ -207,6 +219,7 @@ namespace winrt::TerminalApp::implementation
         FORWARDED_TYPED_EVENT(CloseRequested, Windows::Foundation::IInspectable, Windows::Foundation::IInspectable, _root, CloseRequested);
         FORWARDED_TYPED_EVENT(OpenSystemMenu, Windows::Foundation::IInspectable, Windows::Foundation::IInspectable, _root, OpenSystemMenu);
         FORWARDED_TYPED_EVENT(QuitRequested, Windows::Foundation::IInspectable, Windows::Foundation::IInspectable, _root, QuitRequested);
+        FORWARDED_TYPED_EVENT(ShowWindowChanged, Windows::Foundation::IInspectable, winrt::Microsoft::Terminal::Control::ShowWindowArgs, _root, ShowWindowChanged);
 
 #ifdef UNIT_TESTING
         friend class TerminalAppLocalTests::CommandlineTest;

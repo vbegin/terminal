@@ -41,12 +41,12 @@ class CONSOLE_INFORMATION;
 void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
                      _Out_ std::unique_ptr<IInputEvent>& partialEvent)
 {
-    const CONSOLE_INFORMATION& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+    const auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
     std::deque<std::unique_ptr<IInputEvent>> outEvents;
 
     while (!inEvents.empty())
     {
-        std::unique_ptr<IInputEvent> currentEvent = std::move(inEvents.front());
+        auto currentEvent = std::move(inEvents.front());
         inEvents.pop_front();
 
         if (currentEvent->EventType() != InputEventType::KeyEvent)
@@ -55,10 +55,10 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
         }
         else
         {
-            const KeyEvent* const keyEvent = static_cast<const KeyEvent* const>(currentEvent.get());
+            const auto keyEvent = static_cast<const KeyEvent* const>(currentEvent.get());
 
             std::wstring outWChar;
-            HRESULT hr = S_OK;
+            auto hr = S_OK;
 
             // convert char data to unicode
             if (IsDBCSLeadByteConsole(static_cast<char>(keyEvent->GetCharData()), &gci.CPInfo))
@@ -71,7 +71,7 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
                 }
 
                 // get the 2nd byte and convert to unicode
-                const KeyEvent* const keyEventEndByte = static_cast<const KeyEvent* const>(inEvents.front().get());
+                const auto keyEventEndByte = static_cast<const KeyEvent* const>(inEvents.front().get());
                 inEvents.pop_front();
 
                 char inBytes[] = {
@@ -105,7 +105,7 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
             // push unicode key events back out
             if (SUCCEEDED(hr) && outWChar.size() > 0)
             {
-                KeyEvent unicodeKeyEvent = *keyEvent;
+                auto unicodeKeyEvent = *keyEvent;
                 for (const auto wch : outWChar)
                 {
                     try
@@ -186,12 +186,12 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
             return STATUS_INTEGER_OVERFLOW;
         }
         std::deque<std::unique_ptr<IInputEvent>> readEvents;
-        NTSTATUS Status = inputBuffer.Read(readEvents,
-                                           amountToRead,
-                                           IsPeek,
-                                           true,
-                                           IsUnicode,
-                                           false);
+        auto Status = inputBuffer.Read(readEvents,
+                                       amountToRead,
+                                       IsPeek,
+                                       true,
+                                       IsUnicode,
+                                       false);
 
         if (CONSOLE_STATUS_WAIT == Status)
         {
@@ -273,13 +273,13 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
 {
     try
     {
-        NTSTATUS Status = _DoGetConsoleInput(context,
-                                             outEvents,
-                                             eventsToRead,
-                                             readHandleState,
-                                             false,
-                                             true,
-                                             waiter);
+        auto Status = _DoGetConsoleInput(context,
+                                         outEvents,
+                                         eventsToRead,
+                                         readHandleState,
+                                         false,
+                                         true,
+                                         waiter);
         if (CONSOLE_STATUS_WAIT == Status)
         {
             return HRESULT_FROM_NT(Status);
@@ -313,13 +313,13 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
 {
     try
     {
-        NTSTATUS Status = _DoGetConsoleInput(context,
-                                             outEvents,
-                                             eventsToRead,
-                                             readHandleState,
-                                             true,
-                                             true,
-                                             waiter);
+        auto Status = _DoGetConsoleInput(context,
+                                         outEvents,
+                                         eventsToRead,
+                                         readHandleState,
+                                         true,
+                                         true,
+                                         waiter);
         if (CONSOLE_STATUS_WAIT == Status)
         {
             return HRESULT_FROM_NT(Status);
@@ -353,13 +353,13 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
 {
     try
     {
-        NTSTATUS Status = _DoGetConsoleInput(context,
-                                             outEvents,
-                                             eventsToRead,
-                                             readHandleState,
-                                             false,
-                                             false,
-                                             waiter);
+        auto Status = _DoGetConsoleInput(context,
+                                         outEvents,
+                                         eventsToRead,
+                                         readHandleState,
+                                         false,
+                                         false,
+                                         waiter);
         if (CONSOLE_STATUS_WAIT == Status)
         {
             return HRESULT_FROM_NT(Status);
@@ -393,13 +393,13 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
 {
     try
     {
-        NTSTATUS Status = _DoGetConsoleInput(context,
-                                             outEvents,
-                                             eventsToRead,
-                                             readHandleState,
-                                             true,
-                                             false,
-                                             waiter);
+        auto Status = _DoGetConsoleInput(context,
+                                         outEvents,
+                                         eventsToRead,
+                                         readHandleState,
+                                         true,
+                                         false,
+                                         waiter);
         if (CONSOLE_STATUS_WAIT == Status)
         {
             return HRESULT_FROM_NT(Status);
@@ -537,9 +537,9 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
         auto tempIter = tempBuffer.cbegin();
         auto outIter = buffer.begin();
 
-        for (int i = 0; i < size.Y; i++)
+        for (til::CoordType i = 0; i < size.Y; i++)
         {
-            for (int j = 0; j < size.X; j++)
+            for (til::CoordType j = 0; j < size.X; j++)
             {
                 // Any time we see the lead flag, we presume there will be a trailing one following it.
                 // Giving us two bytes of space (one per cell in the ascii part of the character union)
@@ -554,7 +554,7 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
 
                         // Try to convert the unicode character (2 bytes) in the leading cell to the codepage.
                         CHAR AsciiDbcs[2] = { 0 };
-                        UINT NumBytes = gsl::narrow<UINT>(sizeof(AsciiDbcs));
+                        auto NumBytes = gsl::narrow<UINT>(sizeof(AsciiDbcs));
                         NumBytes = ConvertToOem(codepage, &tempIter->Char.UnicodeChar, 1, &AsciiDbcs[0], NumBytes);
 
                         // Fill the 1 byte (AsciiChar) portion of the leading and trailing cells with each of the bytes returned.
@@ -615,9 +615,9 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
         const auto size = rectangle.Dimensions();
         auto outIter = buffer.begin();
 
-        for (int i = 0; i < size.Y; i++)
+        for (til::CoordType i = 0; i < size.Y; i++)
         {
-            for (int j = 0; j < size.X; j++)
+            for (til::CoordType j = 0; j < size.X; j++)
             {
                 // Clear lead/trailing flags. We'll determine it for ourselves versus the given codepage.
                 WI_ClearAllFlags(outIter->Attributes, COMMON_LVB_SBCSDBCS);
@@ -663,7 +663,7 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
                 else
                 {
                     // If it's not detected as a lead byte of a pair, then just convert it in place and move on.
-                    CHAR c = outIter->Char.AsciiChar;
+                    auto c = outIter->Char.AsciiChar;
 
                     ConvertOutputToUnicode(codepage, &c, 1, &outIter->Char.UnicodeChar, 1);
                     outIter++;
@@ -684,9 +684,9 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
     const auto size = rectangle.Dimensions();
     auto bufferIter = buffer.begin();
 
-    for (SHORT i = 0; i < size.Y; i++)
+    for (til::CoordType i = 0; i < size.Y; i++)
     {
-        for (SHORT j = 0; j < size.X; j++)
+        for (til::CoordType j = 0; j < size.X; j++)
         {
             // Prepare a candidate charinfo on the output side copying the colors but not the lead/trail information.
             CHAR_INFO candidate;
@@ -756,24 +756,23 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
         }
 
         // The buffer given should be big enough to hold the dimensions of the request.
-        size_t targetArea;
-        RETURN_IF_FAILED(SizeTMult(targetSize.X, targetSize.Y, &targetArea));
+        const auto targetArea = targetSize.area<size_t>();
         RETURN_HR_IF(E_INVALIDARG, targetArea < targetBuffer.size());
 
         // Clip the request rectangle to the size of the storage buffer
-        SMALL_RECT clip = requestRectangle.ToExclusive();
+        auto clip = requestRectangle.ToExclusive();
         clip.Right = std::min(clip.Right, storageSize.X);
         clip.Bottom = std::min(clip.Bottom, storageSize.Y);
 
         // Find the target point (where to write the user's buffer)
         // It will either be 0,0 or offset into the buffer by the inverse of the negative values.
-        COORD targetPoint;
+        til::point targetPoint;
         targetPoint.X = clip.Left < 0 ? -clip.Left : 0;
         targetPoint.Y = clip.Top < 0 ? -clip.Top : 0;
 
         // The clipped rect must be inside the buffer size, so it has a minimum value of 0. (max of itself and 0)
-        clip.Left = std::max(clip.Left, 0i16);
-        clip.Top = std::max(clip.Top, 0i16);
+        clip.Left = std::max(clip.Left, 0);
+        clip.Top = std::max(clip.Top, 0);
 
         // The final "request rectangle" or the area inside the buffer we want to read, is the clipped dimensions.
         const auto clippedRequestRectangle = Viewport::FromExclusive(clip);
@@ -784,7 +783,7 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
         // Get an iterator to the beginning of the return buffer
         // We might have to seek this forward or skip around if we clipped the request.
         auto targetIter = targetBuffer.begin();
-        COORD targetPos = { 0 };
+        til::point targetPos;
         const auto targetLimit = Viewport::FromDimensions(targetPoint, clippedRequestRectangle.Dimensions());
 
         // Get an iterator to the beginning of the request inside the screen buffer
@@ -901,8 +900,8 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
         }
 
         // Do clipping according to the legacy patterns.
-        SMALL_RECT writeRegion = requestRectangle.ToInclusive();
-        SMALL_RECT sourceRect;
+        auto writeRegion = requestRectangle.ToInclusive();
+        til::inclusive_rect sourceRect;
         if (writeRegion.Right > storageSize.X - 1)
         {
             writeRegion.Right = storageSize.X - 1;
@@ -949,15 +948,9 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
         for (; target.Y < writeRectangle.BottomExclusive(); target.Y++)
         {
             // We find the offset into the original buffer by the dimensions of the original request rectangle.
-            ptrdiff_t rowOffset = 0;
-            RETURN_IF_FAILED(PtrdiffTSub(target.Y, requestRectangle.Top(), &rowOffset));
-            RETURN_IF_FAILED(PtrdiffTMult(rowOffset, requestRectangle.Width(), &rowOffset));
-
-            ptrdiff_t colOffset = 0;
-            RETURN_IF_FAILED(PtrdiffTSub(target.X, requestRectangle.Left(), &colOffset));
-
-            ptrdiff_t totalOffset = 0;
-            RETURN_IF_FAILED(PtrdiffTAdd(rowOffset, colOffset, &totalOffset));
+            const auto rowOffset = (target.Y - requestRectangle.Top()) * requestRectangle.Width();
+            const auto colOffset = target.X - requestRectangle.Left();
+            const auto totalOffset = rowOffset + colOffset;
 
             // Now we make a subspan starting from that offset for as much of the original request as would fit
             const auto subspan = buffer.subspan(totalOffset, writeRectangle.Width());
@@ -988,7 +981,7 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
 
     try
     {
-        const CONSOLE_INFORMATION& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+        const auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
         const auto codepage = gci.OutputCP;
         LOG_IF_FAILED(_ConvertCellsToWInplace(codepage, buffer, requestRectangle));
 
@@ -1027,7 +1020,7 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
 }
 
 [[nodiscard]] HRESULT ApiRoutines::ReadConsoleOutputAttributeImpl(const SCREEN_INFORMATION& context,
-                                                                  const COORD origin,
+                                                                  const til::point origin,
                                                                   gsl::span<WORD> buffer,
                                                                   size_t& written) noexcept
 {
@@ -1048,7 +1041,7 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
 }
 
 [[nodiscard]] HRESULT ApiRoutines::ReadConsoleOutputCharacterAImpl(const SCREEN_INFORMATION& context,
-                                                                   const COORD origin,
+                                                                   const til::point origin,
                                                                    gsl::span<char> buffer,
                                                                    size_t& written) noexcept
 {
@@ -1077,7 +1070,7 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
 }
 
 [[nodiscard]] HRESULT ApiRoutines::ReadConsoleOutputCharacterWImpl(const SCREEN_INFORMATION& context,
-                                                                   const COORD origin,
+                                                                   const til::point origin,
                                                                    gsl::span<wchar_t> buffer,
                                                                    size_t& written) noexcept
 {
@@ -1121,7 +1114,7 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
                                                  _In_ PCONSOLE_CREATESCREENBUFFER_MSG a)
 {
     Telemetry::Instance().LogApiCall(Telemetry::ApiCall::CreateConsoleScreenBuffer);
-    const CONSOLE_INFORMATION& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
+    const auto& gci = ServiceLocator::LocateGlobals().getConsoleInformation();
 
     // If any buffer type except the one we support is set, it's invalid.
     if (WI_IsAnyFlagSet(a->Flags, ~CONSOLE_TEXTMODE_BUFFER))
@@ -1130,21 +1123,21 @@ void EventsToUnicode(_Inout_ std::deque<std::unique_ptr<IInputEvent>>& inEvents,
         return STATUS_INVALID_PARAMETER;
     }
 
-    ConsoleHandleData::HandleType const HandleType = ConsoleHandleData::HandleType::Output;
+    const auto HandleType = ConsoleHandleData::HandleType::Output;
 
-    const SCREEN_INFORMATION& siExisting = gci.GetActiveOutputBuffer();
+    const auto& siExisting = gci.GetActiveOutputBuffer();
 
     // Create new screen buffer.
-    COORD WindowSize = siExisting.GetViewport().Dimensions();
-    const FontInfo& existingFont = siExisting.GetCurrentFont();
+    auto WindowSize = siExisting.GetViewport().Dimensions();
+    const auto& existingFont = siExisting.GetCurrentFont();
     SCREEN_INFORMATION* ScreenInfo = nullptr;
-    NTSTATUS Status = SCREEN_INFORMATION::CreateInstance(WindowSize,
-                                                         existingFont,
-                                                         WindowSize,
-                                                         siExisting.GetAttributes(),
-                                                         siExisting.GetAttributes(),
-                                                         Cursor::CURSOR_SMALL_SIZE,
-                                                         &ScreenInfo);
+    auto Status = SCREEN_INFORMATION::CreateInstance(WindowSize,
+                                                     existingFont,
+                                                     WindowSize,
+                                                     siExisting.GetAttributes(),
+                                                     siExisting.GetAttributes(),
+                                                     Cursor::CURSOR_SMALL_SIZE,
+                                                     &ScreenInfo);
 
     if (!NT_SUCCESS(Status))
     {

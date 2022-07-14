@@ -37,6 +37,28 @@ constexpr const auto UpdatePatternLocationsInterval = std::chrono::milliseconds(
 
 namespace winrt::Microsoft::Terminal::Control::implementation
 {
+    static winrt::Microsoft::Terminal::Core::OptionalColor OptionalFromColor(const til::color& c)
+    {
+        Core::OptionalColor result;
+        result.Color = c;
+        result.HasValue = true;
+        return result;
+    }
+    static winrt::Microsoft::Terminal::Core::OptionalColor OptionalFromColor(const std::optional<til::color>& c)
+    {
+        Core::OptionalColor result;
+        if (c.has_value())
+        {
+            result.Color = *c;
+            result.HasValue = true;
+        }
+        else
+        {
+            result.HasValue = false;
+        }
+        return result;
+    }
+
     // Helper static function to ensure that all ambiguous-width glyphs are reported as narrow.
     // See microsoft/terminal#2066 for more info.
     static bool _IsGlyphWideForceNarrowFallback(const std::wstring_view /* glyph */)
@@ -47,7 +69,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     static bool _EnsureStaticInitialization()
     {
         // use C++11 magic statics to make sure we only do this once.
-        static bool initialized = []() {
+        static auto initialized = []() {
             // *** THIS IS A SINGLETON ***
             SetGlyphWidthFallback(_IsGlyphWideForceNarrowFallback);
 
@@ -93,12 +115,6 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         auto pfnTitleChanged = std::bind(&ControlCore::_terminalTitleChanged, this, std::placeholders::_1);
         _terminal->SetTitleChangedCallback(pfnTitleChanged);
 
-        auto pfnTabColorChanged = std::bind(&ControlCore::_terminalTabColorChanged, this, std::placeholders::_1);
-        _terminal->SetTabColorChangedCallback(pfnTabColorChanged);
-
-        auto pfnBackgroundColorChanged = std::bind(&ControlCore::_terminalBackgroundColorChanged, this, std::placeholders::_1);
-        _terminal->SetBackgroundCallback(pfnBackgroundColorChanged);
-
         auto pfnScrollPositionChanged = std::bind(&ControlCore::_terminalScrollPositionChanged, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
         _terminal->SetScrollPositionChangedCallback(pfnScrollPositionChanged);
 
@@ -107,6 +123,12 @@ namespace winrt::Microsoft::Terminal::Control::implementation
 
         auto pfnTerminalTaskbarProgressChanged = std::bind(&ControlCore::_terminalTaskbarProgressChanged, this);
         _terminal->TaskbarProgressChangedCallback(pfnTerminalTaskbarProgressChanged);
+
+        auto pfnShowWindowChanged = std::bind(&ControlCore::_terminalShowWindowChanged, this, std::placeholders::_1);
+        _terminal->SetShowWindowCallback(pfnShowWindowChanged);
+
+        auto pfnPlayMidiNote = std::bind(&ControlCore::_terminalPlayMidiNote, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
+        _terminal->SetPlayMidiNoteCallback(pfnPlayMidiNote);
 
         // MSFT 33353327: Initialize the renderer in the ctor instead of Initialize().
         // We need the renderer to be ready to accept new engines before the SwapChainPanel is ready to go.
@@ -124,6 +146,9 @@ namespace winrt::Microsoft::Terminal::Control::implementation
             // Now create the renderer and initialize the render thread.
             const auto& renderSettings = _terminal->GetRenderSettings();
             _renderer = std::make_unique<::Microsoft::Console::Render::Renderer>(renderSettings, _terminal.get(), nullptr, 0, std::move(renderThread));
+
+            _renderer->SetBackgroundColorChangedCallback([this]() { _rendererBackgroundColorChanged(); });
+            _renderer->SetFrameColorChangedCallback([this]() { _rendererTabColorChanged(); });
 
             _renderer->SetRendererEnteredErrorStateCallback([weakThis = get_weak()]() {
                 if (auto strongThis{ weakThis.get() })
@@ -201,6 +226,8 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         {
             _renderer->TriggerTeardown();
         }
+
+        _shutdownMidiAudio();
     }
 
     bool ControlCore::Initialize(const double actualWidth,
@@ -245,8 +272,8 @@ namespace winrt::Microsoft::Terminal::Control::implementation
             // and react accordingly.
             _updateFont(true);
 
-            const COORD windowSize{ static_cast<short>(windowWidth),
-                                    static_cast<short>(windowHeight) };
+            const til::size windowSize{ static_cast<til::CoordType>(windowWidth),
+                                        static_cast<til::CoordType>(windowHeight) };
 
             // First set up the dx engine with the window size in pixels.
             // Then, using the font, get the number of characters that can fit.
@@ -262,11 +289,11 @@ namespace winrt::Microsoft::Terminal::Control::implementation
             const auto height = vp.Height();
             _connection.Resize(height, width);
 
-            if (_OwningHwnd != 0)
+            if (_owningHwnd != 0)
             {
                 if (auto conpty{ _connection.try_as<TerminalConnection::ConptyConnection>() })
                 {
-                    conpty.ReparentWindow(_OwningHwnd);
+                    conpty.ReparentWindow(_owningHwnd);
                 }
             }
 
@@ -390,12 +417,51 @@ namespace winrt::Microsoft::Terminal::Control::implementation
             vkey != VK_SNAPSHOT &&
             keyDown)
         {
+            const auto isInMarkMode = _terminal->SelectionMode() == ::Terminal::SelectionInteractionMode::Mark;
+            if (isInMarkMode)
+            {
+                if (modifiers.IsCtrlPressed() && vkey == 'A')
+                {
+                    // Ctrl + A --> Select all
+                    auto lock = _terminal->LockForWriting();
+                    _terminal->SelectAll();
+                    _updateSelectionUI();
+                    return true;
+                }
+                else if (vkey == VK_TAB && _settings->DetectURLs())
+                {
+                    // [Shift +] Tab --> next/previous hyperlink
+                    auto lock = _terminal->LockForWriting();
+                    const auto direction = modifiers.IsShiftPressed() ? ::Terminal::SearchDirection::Backward : ::Terminal::SearchDirection::Forward;
+                    _terminal->SelectHyperlink(direction);
+                    _updateSelectionUI();
+                    return true;
+                }
+                else if (vkey == VK_RETURN && modifiers.IsCtrlPressed() && _terminal->IsTargetingUrl())
+                {
+                    // Ctrl + Enter --> Open URL
+                    auto lock = _terminal->LockForReading();
+                    const auto uri = _terminal->GetHyperlinkAtBufferPosition(_terminal->GetSelectionAnchor());
+                    _OpenHyperlinkHandlers(*this, winrt::make<OpenHyperlinkEventArgs>(winrt::hstring{ uri }));
+                    return true;
+                }
+                else if (vkey == VK_RETURN)
+                {
+                    // [Shift +] Enter --> copy text
+                    // Don't lock here! CopySelectionToClipboard already locks for you!
+                    CopySelectionToClipboard(modifiers.IsShiftPressed(), nullptr);
+                    _terminal->ClearSelection();
+                    _updateSelectionUI();
+                    return true;
+                }
+            }
+
             // try to update the selection
-            if (const auto updateSlnParams{ ::Terminal::ConvertKeyEventToUpdateSelectionParams(modifiers, vkey) })
+            if (const auto updateSlnParams{ _terminal->ConvertKeyEventToUpdateSelectionParams(modifiers, vkey) })
             {
                 auto lock = _terminal->LockForWriting();
-                _terminal->UpdateSelection(updateSlnParams->first, updateSlnParams->second);
-                _renderer->TriggerSelection();
+                _terminal->UpdateSelection(updateSlnParams->first, updateSlnParams->second, modifiers);
+                _updateSelectionUI();
                 return true;
             }
 
@@ -403,7 +469,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
             if (!modifiers.IsWinPressed())
             {
                 _terminal->ClearSelection();
-                _renderer->TriggerSelection();
+                _updateSelectionUI();
             }
 
             // When there is a selection active, escape should clear it and NOT flow through
@@ -431,7 +497,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
                                      const short wheelDelta,
                                      const TerminalInput::MouseButtonState state)
     {
-        return _terminal->SendMouseEvent(viewportPos.to_win32_coord(), uiButton, states, wheelDelta, state);
+        return _terminal->SendMouseEvent(viewportPos, uiButton, states, wheelDelta, state);
     }
 
     void ControlCore::UserScrollViewport(const int viewTop)
@@ -555,12 +621,12 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         _lastHoveredCell = terminalPosition;
         uint16_t newId{ 0u };
         // we can't use auto here because we're pre-declaring newInterval.
-        decltype(_terminal->GetHyperlinkIntervalFromPosition(COORD{})) newInterval{ std::nullopt };
+        decltype(_terminal->GetHyperlinkIntervalFromViewportPosition({})) newInterval{ std::nullopt };
         if (terminalPosition.has_value())
         {
             auto lock = _terminal->LockForReading(); // Lock for the duration of our reads.
-            newId = _terminal->GetHyperlinkIdAtPosition(terminalPosition->to_win32_coord());
-            newInterval = _terminal->GetHyperlinkIntervalFromPosition(terminalPosition->to_win32_coord());
+            newId = _terminal->GetHyperlinkIdAtViewportPosition(*terminalPosition);
+            newInterval = _terminal->GetHyperlinkIntervalFromViewportPosition(*terminalPosition);
         }
 
         // If the hyperlink ID changed or the interval changed, trigger a redraw all
@@ -590,7 +656,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     {
         // Lock for the duration of our reads.
         auto lock = _terminal->LockForReading();
-        return winrt::hstring{ _terminal->GetHyperlinkAtPosition(til::point{ pos }.to_win32_coord()) };
+        return winrt::hstring{ _terminal->GetHyperlinkAtViewportPosition(til::point{ pos }) };
     }
 
     winrt::hstring ControlCore::HoveredUriText() const
@@ -598,7 +664,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         auto lock = _terminal->LockForReading(); // Lock for the duration of our reads.
         if (_lastHoveredCell.has_value())
         {
-            return winrt::hstring{ _terminal->GetHyperlinkAtPosition(_lastHoveredCell->to_win32_coord()) };
+            return winrt::hstring{ _terminal->GetHyperlinkAtViewportPosition(*_lastHoveredCell) };
         }
         return {};
     }
@@ -644,6 +710,9 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         _renderEngine->SetSoftwareRendering(_settings->SoftwareRendering());
         // Inform the renderer of our opacity
         _renderEngine->EnableTransparentBackground(_isBackgroundTransparent());
+
+        // Trigger a redraw to repaint the window background and tab colors.
+        _renderer->TriggerRedrawAll(true, true);
 
         _updateAntiAliasingMode();
 
@@ -706,8 +775,8 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     //   concerned with initialization process. Value forwarded to event handler.
     void ControlCore::_updateFont(const bool initialUpdate)
     {
-        const int newDpi = static_cast<int>(static_cast<double>(USER_DEFAULT_SCREEN_DPI) *
-                                            _compositionScale);
+        const auto newDpi = static_cast<int>(static_cast<double>(USER_DEFAULT_SCREEN_DPI) *
+                                             _compositionScale);
 
         _terminal->SetFontInfo(_actualFont);
 
@@ -765,7 +834,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     bool ControlCore::_setFontSizeUnderLock(int fontSize)
     {
         // Make sure we have a non-zero font size
-        const auto newSize = std::max<short>(gsl::narrow_cast<short>(fontSize), 1);
+        const auto newSize = std::max(fontSize, 1);
         const auto fontFace = _settings->FontFace();
         const auto fontWeight = _settings->FontWeight();
         _actualFont = { fontFace, 0, fontWeight.Weight, { 0, newSize }, CP_UTF8, false };
@@ -821,8 +890,8 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     // - <none>
     void ControlCore::_refreshSizeUnderLock()
     {
-        auto cx = gsl::narrow_cast<short>(_panelWidth * _compositionScale);
-        auto cy = gsl::narrow_cast<short>(_panelHeight * _compositionScale);
+        auto cx = gsl::narrow_cast<til::CoordType>(_panelWidth * _compositionScale);
+        auto cy = gsl::narrow_cast<til::CoordType>(_panelHeight * _compositionScale);
 
         // Don't actually resize so small that a single character wouldn't fit
         // in either dimension. The buffer really doesn't like being size 0.
@@ -844,7 +913,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
 
         // If this function succeeds with S_FALSE, then the terminal didn't
         // actually change size. No need to notify the connection of this no-op.
-        const HRESULT hr = _terminal->UserResize({ vp.Width(), vp.Height() });
+        const auto hr = _terminal->UserResize({ vp.Width(), vp.Height() });
         if (SUCCEEDED(hr) && hr != S_FALSE)
         {
             _connection.Resize(vp.Height(), vp.Width());
@@ -890,17 +959,41 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         _refreshSizeUnderLock();
     }
 
-    void ControlCore::SetSelectionAnchor(til::point const& position)
+    void ControlCore::SetSelectionAnchor(const til::point position)
     {
         auto lock = _terminal->LockForWriting();
-        _terminal->SetSelectionAnchor(position.to_win32_coord());
+        _terminal->SetSelectionAnchor(position);
+    }
+
+    // Method Description:
+    // - Retrieves selection metadata from Terminal necessary to draw the
+    //    selection markers.
+    // - Since all of this needs to be done under lock, it is more performant
+    //    to throw it all in a struct and pass it along.
+    Control::SelectionData ControlCore::SelectionInfo() const
+    {
+        auto lock = _terminal->LockForReading();
+        Control::SelectionData info;
+
+        const auto start{ _terminal->SelectionStartForRendering() };
+        info.StartPos = { start.X, start.Y };
+
+        const auto end{ _terminal->SelectionEndForRendering() };
+        info.EndPos = { end.X, end.Y };
+
+        info.Endpoint = static_cast<SelectionEndpointTarget>(_terminal->SelectionEndpointTarget());
+
+        const auto bufferSize{ _terminal->GetTextBuffer().GetSize() };
+        info.StartAtLeftBoundary = _terminal->GetSelectionAnchor().x == bufferSize.Left();
+        info.EndAtRightBoundary = _terminal->GetSelectionEnd().x == bufferSize.RightInclusive();
+        return info;
     }
 
     // Method Description:
     // - Sets selection's end position to match supplied cursor position, e.g. while mouse dragging.
     // Arguments:
     // - position: the point in terminal coordinates (in cells, not pixels)
-    void ControlCore::SetEndSelectionPoint(til::point const& position)
+    void ControlCore::SetEndSelectionPoint(const til::point position)
     {
         if (!_terminal->IsSelectionActive())
         {
@@ -917,8 +1010,8 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         };
 
         // save location (for rendering) + render
-        _terminal->SetSelectionEnd(terminalPosition.to_win32_coord());
-        _renderer->TriggerSelection();
+        _terminal->SetSelectionEnd(terminalPosition);
+        _updateSelectionUI();
     }
 
     // Called when the Terminal wants to set something to the clipboard, i.e.
@@ -931,7 +1024,6 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     // Method Description:
     // - Given a copy-able selection, get the selected text from the buffer and send it to the
     //     Windows Clipboard (CascadiaWin32:main.cpp).
-    // - CopyOnSelect does NOT clear the selection
     // Arguments:
     // - singleLine: collapse all of the text to one line
     // - formats: which formats to copy (defined by action's CopyFormatting arg). nullptr
@@ -977,12 +1069,6 @@ namespace winrt::Microsoft::Terminal::Control::implementation
                                                     bgColor) :
                                  "";
 
-        if (!_settings->CopyOnSelect())
-        {
-            _terminal->ClearSelection();
-            _renderer->TriggerSelection();
-        }
-
         // send data up for clipboard
         _CopyToClipboardHandlers(*this,
                                  winrt::make<CopyToClipboardEventArgs>(winrt::hstring{ textData },
@@ -992,6 +1078,58 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         return true;
     }
 
+    void ControlCore::SelectAll()
+    {
+        auto lock = _terminal->LockForWriting();
+        _terminal->SelectAll();
+        _updateSelectionUI();
+    }
+
+    void ControlCore::ClearSelection()
+    {
+        auto lock = _terminal->LockForWriting();
+        _terminal->ClearSelection();
+        _updateSelectionUI();
+    }
+
+    bool ControlCore::ToggleBlockSelection()
+    {
+        auto lock = _terminal->LockForWriting();
+        if (_terminal->IsSelectionActive())
+        {
+            _terminal->SetBlockSelection(!_terminal->IsBlockSelection());
+            _renderer->TriggerSelection();
+            // do not update the selection markers!
+            // if we were showing them, keep it that way.
+            // otherwise, continue to not show them
+            return true;
+        }
+        return false;
+    }
+
+    void ControlCore::ToggleMarkMode()
+    {
+        auto lock = _terminal->LockForWriting();
+        _terminal->ToggleMarkMode();
+        _updateSelectionUI();
+    }
+
+    Control::SelectionInteractionMode ControlCore::SelectionMode() const
+    {
+        return static_cast<Control::SelectionInteractionMode>(_terminal->SelectionMode());
+    }
+
+    bool ControlCore::SwitchSelectionEndpoint()
+    {
+        if (_terminal->IsSelectionActive())
+        {
+            _terminal->SwitchSelectionEndpoint();
+            _updateSelectionUI();
+            return true;
+        }
+        return false;
+    }
+
     // Method Description:
     // - Pre-process text pasted (presumably from the clipboard)
     //   before sending it over the terminal's connection.
@@ -999,7 +1137,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     {
         _terminal->WritePastedText(hstr);
         _terminal->ClearSelection();
-        _renderer->TriggerSelection();
+        _updateSelectionUI();
         _terminal->TrySnapOnInput();
     }
 
@@ -1136,36 +1274,6 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     }
 
     // Method Description:
-    // - Called for the Terminal's TabColorChanged callback. This will re-raise
-    //   a new winrt TypedEvent that can be listened to.
-    // - The listeners to this event will re-query the control for the current
-    //   value of TabColor().
-    // Arguments:
-    // - <unused>
-    // Return Value:
-    // - <none>
-    void ControlCore::_terminalTabColorChanged(const std::optional<til::color> /*color*/)
-    {
-        // Raise a TabColorChanged event
-        _TabColorChangedHandlers(*this, nullptr);
-    }
-
-    // Method Description:
-    // - Called for the Terminal's BackgroundColorChanged callback. This will
-    //   re-raise a new winrt TypedEvent that can be listened to.
-    // - The listeners to this event will re-query the control for the current
-    //   value of BackgroundColor().
-    // Arguments:
-    // - <unused>
-    // Return Value:
-    // - <none>
-    void ControlCore::_terminalBackgroundColorChanged(const COLORREF /*color*/)
-    {
-        // Raise a BackgroundColorChanged event
-        _BackgroundColorChangedHandlers(*this, nullptr);
-    }
-
-    // Method Description:
     // - Update the position and size of the scrollbar to match the given
     //      viewport top, viewport height, and buffer size.
     //   Additionally fires a ScrollPositionChanged event for anyone who's
@@ -1179,6 +1287,10 @@ namespace winrt::Microsoft::Terminal::Control::implementation
                                                      const int viewHeight,
                                                      const int bufferSize)
     {
+        if (!_initializedTerminal)
+        {
+            return;
+        }
         // Clear the regex pattern tree so the renderer does not try to render them while scrolling
         // We're **NOT** taking the lock here unlike _scrollbarChangeHandler because
         // we are already under lock (since this usually happens as a result of writing).
@@ -1212,6 +1324,75 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     void ControlCore::_terminalTaskbarProgressChanged()
     {
         _TaskbarProgressChangedHandlers(*this, nullptr);
+    }
+
+    void ControlCore::_terminalShowWindowChanged(bool showOrHide)
+    {
+        if (_initializedTerminal)
+        {
+            auto showWindow = winrt::make_self<implementation::ShowWindowArgs>(showOrHide);
+            _ShowWindowChangedHandlers(*this, *showWindow);
+        }
+    }
+
+    // Method Description:
+    // - Plays a single MIDI note, blocking for the duration.
+    // Arguments:
+    // - noteNumber - The MIDI note number to be played (0 - 127).
+    // - velocity - The force with which the note should be played (0 - 127).
+    // - duration - How long the note should be sustained (in microseconds).
+    void ControlCore::_terminalPlayMidiNote(const int noteNumber, const int velocity, const std::chrono::microseconds duration)
+    {
+        // We create the audio instance on demand, and lock it for the duration
+        // of the note output so it can't be destroyed while in use.
+        auto& midiAudio = _getMidiAudio();
+        midiAudio.Lock();
+
+        // We then unlock the terminal, so the UI doesn't hang while we're busy.
+        auto& terminalLock = _terminal->GetReadWriteLock();
+        terminalLock.unlock();
+
+        // This call will block for the duration, unless shutdown early.
+        midiAudio.PlayNote(noteNumber, velocity, duration);
+
+        // Once complete, we reacquire the terminal lock and unlock the audio.
+        // If the terminal has shutdown in the meantime, the Unlock call
+        // will throw an exception, forcing the thread to exit ASAP.
+        terminalLock.lock();
+        midiAudio.Unlock();
+    }
+
+    // Method Description:
+    // - Returns the MIDI audio instance, created on demand.
+    // Arguments:
+    // - <none>
+    // Return Value:
+    // - a reference to the MidiAudio instance.
+    MidiAudio& ControlCore::_getMidiAudio()
+    {
+        if (!_midiAudio)
+        {
+            _midiAudio = std::make_unique<MidiAudio>();
+            _midiAudio->Initialize();
+        }
+        return *_midiAudio;
+    }
+
+    // Method Description:
+    // - Shuts down the MIDI audio system if previously instantiated.
+    // Arguments:
+    // - <none>
+    // Return Value:
+    // - <none>
+    void ControlCore::_shutdownMidiAudio()
+    {
+        if (_midiAudio)
+        {
+            // We lock the terminal here to make sure the shutdown promise is
+            // set before the audio is unlocked in the thread that is playing.
+            auto lock = _terminal->LockForWriting();
+            _midiAudio->Shutdown();
+        }
     }
 
     bool ControlCore::HasSelection() const
@@ -1261,22 +1442,27 @@ namespace winrt::Microsoft::Terminal::Control::implementation
             return;
         }
 
-        const Search::Direction direction = goForward ?
-                                                Search::Direction::Forward :
-                                                Search::Direction::Backward;
+        const auto direction = goForward ?
+                                   Search::Direction::Forward :
+                                   Search::Direction::Backward;
 
-        const Search::Sensitivity sensitivity = caseSensitive ?
-                                                    Search::Sensitivity::CaseSensitive :
-                                                    Search::Sensitivity::CaseInsensitive;
+        const auto sensitivity = caseSensitive ?
+                                     Search::Sensitivity::CaseSensitive :
+                                     Search::Sensitivity::CaseInsensitive;
 
         ::Search search(*GetUiaData(), text.c_str(), direction, sensitivity);
         auto lock = _terminal->LockForWriting();
-        const bool foundMatch{ search.FindNext() };
+        const auto foundMatch{ search.FindNext() };
         if (foundMatch)
         {
             _terminal->SetBlockSelection(false);
             search.Select();
+
+            // this is used for search,
+            // DO NOT call _updateSelectionUI() here.
+            // We don't want to show the markers so manually tell it to clear it.
             _renderer->TriggerSelection();
+            _UpdateSelectionMarkersHandlers(*this, winrt::make<implementation::UpdateSelectionMarkersEventArgs>(true));
         }
 
         // Raise a FoundMatch event, which the control will use to notify
@@ -1351,6 +1537,16 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         _SwapChainChangedHandlers(*this, nullptr);
     }
 
+    void ControlCore::_rendererBackgroundColorChanged()
+    {
+        _BackgroundColorChangedHandlers(*this, nullptr);
+    }
+
+    void ControlCore::_rendererTabColorChanged()
+    {
+        _TabColorChangedHandlers(*this, nullptr);
+    }
+
     void ControlCore::BlinkAttributeTick()
     {
         auto lock = _terminal->LockForWriting();
@@ -1404,7 +1600,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         }
 
         auto lock = _terminal->LockForReading();
-        return til::point{ _terminal->GetCursorPosition() }.to_core_point();
+        return _terminal->GetCursorPosition().to_core_point();
     }
 
     // This one's really pushing the boundary of what counts as "encapsulation".
@@ -1423,7 +1619,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         // handle ALT key
         _terminal->SetBlockSelection(altEnabled);
 
-        ::Terminal::SelectionExpansion mode = ::Terminal::SelectionExpansion::Char;
+        auto mode = ::Terminal::SelectionExpansion::Char;
         if (numberOfClicks == 1)
         {
             mode = ::Terminal::SelectionExpansion::Char;
@@ -1456,7 +1652,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         {
             // If shift is pressed and there is a selection we extend it using
             // the selection mode (expand the "end" selection point)
-            _terminal->SetSelectionEnd(terminalPosition.to_win32_coord(), mode);
+            _terminal->SetSelectionEnd(terminalPosition, mode);
             selectionNeedsToBeCopied = true;
         }
         else if (mode != ::Terminal::SelectionExpansion::Char || shiftEnabled)
@@ -1464,11 +1660,20 @@ namespace winrt::Microsoft::Terminal::Control::implementation
             // If we are handling a double / triple-click or shift+single click
             // we establish selection using the selected mode
             // (expand both "start" and "end" selection points)
-            _terminal->MultiClickSelection(terminalPosition.to_win32_coord(), mode);
+            _terminal->MultiClickSelection(terminalPosition, mode);
             selectionNeedsToBeCopied = true;
         }
+        _updateSelectionUI();
+    }
 
+    // Method Description:
+    // - Updates the renderer's representation of the selection as well as the selection marker overlay in TermControl
+    void ControlCore::_updateSelectionUI()
+    {
         _renderer->TriggerSelection();
+        // only show the markers if we're doing a keyboard selection or in mark mode
+        const bool showMarkers{ _terminal->SelectionMode() >= ::Microsoft::Terminal::Core::Terminal::SelectionInteractionMode::Keyboard };
+        _UpdateSelectionMarkersHandlers(*this, winrt::make<implementation::UpdateSelectionMarkersEventArgs>(!showMarkers));
     }
 
     void ControlCore::AttachUiaEngine(::Microsoft::Console::Render::IRenderEngine* const pEngine)
@@ -1494,10 +1699,18 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     }
     void ControlCore::_connectionOutputHandler(const hstring& hstr)
     {
-        _terminal->Write(hstr);
+        try
+        {
+            _terminal->Write(hstr);
 
-        // Start the throttled update of where our hyperlinks are.
-        _updatePatternLocations->Run();
+            // Start the throttled update of where our hyperlinks are.
+            _updatePatternLocations->Run();
+        }
+        catch (...)
+        {
+            // We're expecting to receive an exception here if the terminal
+            // is closed while we're blocked playing a MIDI note.
+        }
     }
 
     // Method Description:
@@ -1516,7 +1729,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     {
         if (clearType == Control::ClearBufferType::Scrollback || clearType == Control::ClearBufferType::All)
         {
-            _terminal->EraseInDisplay(::Microsoft::Console::VirtualTerminal::DispatchTypes::EraseType::Scrollback);
+            _terminal->EraseScrollback();
         }
 
         if (clearType == Control::ClearBufferType::Screen || clearType == Control::ClearBufferType::All)
@@ -1675,8 +1888,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
 
         _renderEngine->SetSelectionBackground(til::color{ _settings->SelectionBackground() });
 
-        _renderer->TriggerRedrawAll();
-        _BackgroundColorChangedHandlers(*this, nullptr);
+        _renderer->TriggerRedrawAll(true);
     }
 
     bool ControlCore::HasUnfocusedAppearance() const
@@ -1696,6 +1908,60 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         }
     }
 
+    // Method Description:
+    // - Notifies the attached PTY that the window has changed visibility state
+    // - NOTE: Most VT commands are generated in `TerminalDispatch` and sent to this
+    //         class as the target for transmission. But since this message isn't
+    //         coming in via VT parsing (and rather from a window state transition)
+    //         we generate and send it here.
+    // Arguments:
+    // - visible: True for visible; false for not visible.
+    // Return Value:
+    // - <none>
+    void ControlCore::WindowVisibilityChanged(const bool showOrHide)
+    {
+        if (_initializedTerminal)
+        {
+            // show is true, hide is false
+            if (auto conpty{ _connection.try_as<TerminalConnection::ConptyConnection>() })
+            {
+                conpty.ShowHide(showOrHide);
+            }
+        }
+    }
+
+    // Method Description:
+    // - When the control gains focus, it needs to tell ConPTY about this.
+    //   Usually, these sequences are reserved for applications that
+    //   specifically request SET_FOCUS_EVENT_MOUSE, ?1004h. ConPTY uses this
+    //   sequence REGARDLESS to communicate if the control was focused or not.
+    // - Even if a client application disables this mode, the Terminal & conpty
+    //   should always request this from the hosting terminal (and just ignore
+    //   internally to ConPTY).
+    // - Full support for this sequence is tracked in GH#11682.
+    // - This is related to work done for GH#2988.
+    void ControlCore::GotFocus()
+    {
+        _focusChanged(true);
+    }
+
+    // See GotFocus.
+    void ControlCore::LostFocus()
+    {
+        _focusChanged(false);
+    }
+
+    void ControlCore::_focusChanged(bool focused)
+    {
+        // GH#13461 - temporarily turn off read-only mode, send the focus event,
+        // then turn it back on. Even in focus mode, focus events are fine to
+        // send. We don't want to pop a warning every time the control is
+        // focused.
+        const auto previous = std::exchange(_isReadOnly, false);
+        const auto restore = wil::scope_exit([&]() { _isReadOnly = previous; });
+        _terminal->FocusChanged(focused);
+    }
+
     bool ControlCore::_isBackgroundTransparent()
     {
         // If we're:
@@ -1706,6 +1972,167 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         // then the renderer should not render "default background" text with a
         // fully opaque background. Doing that would cover up our nice
         // transparency, or our acrylic, or our image.
-        return Opacity() < 1.0f || UseAcrylic() || !_settings->BackgroundImage().empty();
+        return Opacity() < 1.0f || UseAcrylic() || !_settings->BackgroundImage().empty() || _settings->UseBackgroundImageForWindow();
+    }
+
+    uint64_t ControlCore::OwningHwnd()
+    {
+        return _owningHwnd;
+    }
+
+    void ControlCore::OwningHwnd(uint64_t owner)
+    {
+        if (owner != _owningHwnd && _connection)
+        {
+            if (auto conpty{ _connection.try_as<TerminalConnection::ConptyConnection>() })
+            {
+                conpty.ReparentWindow(owner);
+            }
+        }
+        _owningHwnd = owner;
+    }
+
+    Windows::Foundation::Collections::IVector<Control::ScrollMark> ControlCore::ScrollMarks() const
+    {
+        auto internalMarks{ _terminal->GetScrollMarks() };
+        auto v = winrt::single_threaded_observable_vector<Control::ScrollMark>();
+        for (const auto& mark : internalMarks)
+        {
+            Control::ScrollMark m{};
+
+            // sneaky: always evaluate the color of the mark to a real value
+            // before shoving it into the optional. If the mark doesn't have a
+            // specific color set, we'll use the value from the color table
+            // that's appropriate for this category of mark. If we do have a
+            // color set, then great we'll use that. The TermControl can then
+            // always use the value in the Mark regardless if it was actually
+            // set or not.
+            m.Color = OptionalFromColor(_terminal->GetColorForMark(mark));
+            m.Start = mark.start.to_core_point();
+            m.End = mark.end.to_core_point();
+
+            v.Append(m);
+        }
+
+        return v;
+    }
+
+    void ControlCore::AddMark(const Control::ScrollMark& mark)
+    {
+        ::Microsoft::Console::VirtualTerminal::DispatchTypes::ScrollMark m{};
+
+        if (mark.Color.HasValue)
+        {
+            m.color = til::color{ mark.Color.Color };
+        }
+
+        if (HasSelection())
+        {
+            m.start = til::point{ _terminal->GetSelectionAnchor() };
+            m.end = til::point{ _terminal->GetSelectionEnd() };
+        }
+        else
+        {
+            m.start = m.end = til::point{ _terminal->GetTextBuffer().GetCursor().GetPosition() };
+        }
+
+        // The version of this that only accepts a ScrollMark will automatically
+        // set the start & end to the cursor position.
+        _terminal->AddMark(m, m.start, m.end);
+    }
+    void ControlCore::ClearMark() { _terminal->ClearMark(); }
+    void ControlCore::ClearAllMarks() { _terminal->ClearAllMarks(); }
+
+    void ControlCore::ScrollToMark(const Control::ScrollToMarkDirection& direction)
+    {
+        const auto currentOffset = ScrollOffset();
+        const auto& marks{ _terminal->GetScrollMarks() };
+
+        std::optional<DispatchTypes::ScrollMark> tgt;
+
+        switch (direction)
+        {
+        case ScrollToMarkDirection::Last:
+        {
+            int highest = currentOffset;
+            for (const auto& mark : marks)
+            {
+                const auto newY = mark.start.y;
+                if (newY > highest)
+                {
+                    tgt = mark;
+                    highest = newY;
+                }
+            }
+            break;
+        }
+        case ScrollToMarkDirection::First:
+        {
+            int lowest = currentOffset;
+            for (const auto& mark : marks)
+            {
+                const auto newY = mark.start.y;
+                if (newY < lowest)
+                {
+                    tgt = mark;
+                    lowest = newY;
+                }
+            }
+            break;
+        }
+        case ScrollToMarkDirection::Next:
+        {
+            int minDistance = INT_MAX;
+            for (const auto& mark : marks)
+            {
+                const auto delta = mark.start.y - currentOffset;
+                if (delta > 0 && delta < minDistance)
+                {
+                    tgt = mark;
+                    minDistance = delta;
+                }
+            }
+            break;
+        }
+        case ScrollToMarkDirection::Previous:
+        default:
+        {
+            int minDistance = INT_MAX;
+            for (const auto& mark : marks)
+            {
+                const auto delta = currentOffset - mark.start.y;
+                if (delta > 0 && delta < minDistance)
+                {
+                    tgt = mark;
+                    minDistance = delta;
+                }
+            }
+            break;
+        }
+        }
+
+        const auto viewHeight = ViewHeight();
+        const auto bufferSize = BufferHeight();
+
+        // UserScrollViewport, to update the Terminal about where the viewport should be
+        // then raise a _terminalScrollPositionChanged to inform the control to update the scrollbar.
+        if (tgt.has_value())
+        {
+            UserScrollViewport(tgt->start.y);
+            _terminalScrollPositionChanged(tgt->start.y, viewHeight, bufferSize);
+        }
+        else
+        {
+            if (direction == ScrollToMarkDirection::Last || direction == ScrollToMarkDirection::Next)
+            {
+                UserScrollViewport(BufferHeight());
+                _terminalScrollPositionChanged(BufferHeight(), viewHeight, bufferSize);
+            }
+            else if (direction == ScrollToMarkDirection::First || direction == ScrollToMarkDirection::Previous)
+            {
+                UserScrollViewport(0);
+                _terminalScrollPositionChanged(0, viewHeight, bufferSize);
+            }
+        }
     }
 }

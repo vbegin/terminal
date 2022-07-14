@@ -14,6 +14,7 @@
 
 static constexpr std::string_view Utf8Bom{ "\xEF\xBB\xBF", 3 };
 static constexpr std::wstring_view UnpackagedSettingsFolderName{ L"Microsoft\\Windows Terminal\\" };
+static constexpr std::wstring_view ReleaseSettingsFolder{ L"Packages\\Microsoft.WindowsTerminal_8wekyb3d8bbwe\\LocalState\\" };
 
 namespace winrt::Microsoft::Terminal::Settings::Model
 {
@@ -21,7 +22,7 @@ namespace winrt::Microsoft::Terminal::Settings::Model
     // You can put your settings.json or state.json in this directory.
     std::filesystem::path GetBaseSettingsPath()
     {
-        static std::filesystem::path baseSettingsPath = []() {
+        static auto baseSettingsPath = []() {
             wil::unique_cotaskmem_string localAppDataFolder;
             // KF_FLAG_FORCE_APP_DATA_REDIRECTION, when engaged, causes SHGet... to return
             // the new AppModel paths (Packages/xxx/RoamingState, etc.) for standard path requests.
@@ -37,6 +38,32 @@ namespace winrt::Microsoft::Terminal::Settings::Model
 
             // Create the directory if it doesn't exist
             std::filesystem::create_directories(parentDirectoryForSettingsFile);
+
+            return parentDirectoryForSettingsFile;
+        }();
+        return baseSettingsPath;
+    }
+
+    // Returns a path like C:\Users\<username>\AppData\Local\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState
+    // to the path of the stable release settings
+    std::filesystem::path GetReleaseSettingsPath()
+    {
+        static std::filesystem::path baseSettingsPath = []() {
+            wil::unique_cotaskmem_string localAppDataFolder;
+            // We're using KF_FLAG_NO_PACKAGE_REDIRECTION to ensure that we always get the
+            // user's actual local AppData directory.
+            THROW_IF_FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_NO_PACKAGE_REDIRECTION, nullptr, &localAppDataFolder));
+
+            // Returns a path like C:\Users\<username>\AppData\Local
+            std::filesystem::path parentDirectoryForSettingsFile{ localAppDataFolder.get() };
+
+            //Appending \Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState to the settings path
+            parentDirectoryForSettingsFile /= ReleaseSettingsFolder;
+
+            if (!IsPackaged())
+            {
+                parentDirectoryForSettingsFile /= UnpackagedSettingsFolderName;
+            }
 
             return parentDirectoryForSettingsFile;
         }();
@@ -86,7 +113,7 @@ namespace winrt::Microsoft::Terminal::Settings::Model
         // * ReadFile() always returns the requested amount of data (unless the file is smaller)
         // * It's unlikely that the file was changed between GetFileSize() and ReadFile()
         // -> Lets add a retry-loop just in case, to not fail if the file size changed while reading.
-        for (int i = 0; i < 3; ++i)
+        for (auto i = 0; i < 3; ++i)
         {
             wil::unique_hfile file{ CreateFileW(path.c_str(),
                                                 GENERIC_READ,
@@ -108,7 +135,7 @@ namespace winrt::Microsoft::Terminal::Settings::Model
             // ReadUTF8File will notice it.
             if (elevatedOnly)
             {
-                const bool hadExpectedPermissions{ _isOwnedByAdministrators(file.get()) };
+                const auto hadExpectedPermissions{ _isOwnedByAdministrators(file.get()) };
                 if (!hadExpectedPermissions)
                 {
                     // Close the handle

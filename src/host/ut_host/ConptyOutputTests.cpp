@@ -29,8 +29,8 @@ class ConptyOutputTests
     // !!! DANGER: Many tests in this class expect the Terminal and Host buffers
     // to be 80x32. If you change these, you'll probably inadvertently break a
     // bunch of tests !!!
-    static const SHORT TerminalViewWidth = 80;
-    static const SHORT TerminalViewHeight = 32;
+    static const til::CoordType TerminalViewWidth = 80;
+    static const til::CoordType TerminalViewHeight = 32;
 
     // This test class is to write some things into the PTY and then check that
     // the rendering that is coming out of the VT-sequence generator is exactly
@@ -79,11 +79,11 @@ class ConptyOutputTests
         // Make sure a test hasn't left us in the alt buffer on accident
         VERIFY_IS_FALSE(currentBuffer._IsAltBuffer());
         VERIFY_SUCCEEDED(currentBuffer.SetViewportOrigin(true, { 0, 0 }, true));
-        VERIFY_ARE_EQUAL(COORD({ 0, 0 }), currentBuffer.GetTextBuffer().GetCursor().GetPosition());
+        VERIFY_ARE_EQUAL(til::point{}, currentBuffer.GetTextBuffer().GetCursor().GetPosition());
 
         // Set up an xterm-256 renderer for conpty
-        wil::unique_hfile hFile = wil::unique_hfile(INVALID_HANDLE_VALUE);
-        Viewport initialViewport = currentBuffer.GetViewport();
+        auto hFile = wil::unique_hfile(INVALID_HANDLE_VALUE);
+        auto initialViewport = currentBuffer.GetViewport();
 
         auto vtRenderEngine = std::make_unique<Xterm256Engine>(std::move(hFile),
                                                                initialViewport);
@@ -123,24 +123,24 @@ class ConptyOutputTests
     TEST_METHOD(SetConsoleTitleWithControlChars);
 
 private:
-    bool _writeCallback(const char* const pch, size_t const cch);
+    bool _writeCallback(const char* const pch, const size_t cch);
     void _flushFirstFrame();
     std::deque<std::string> expectedOutput;
     std::unique_ptr<CommonState> m_state;
 };
 
-bool ConptyOutputTests::_writeCallback(const char* const pch, size_t const cch)
+bool ConptyOutputTests::_writeCallback(const char* const pch, const size_t cch)
 {
     // Since rendering happens on a background thread that doesn't have the exception handler on it
     // we need to rely on VERIFY's return codes instead of exceptions.
     const WEX::TestExecution::DisableVerifyExceptions disableExceptionsScope;
 
-    std::string actualString = std::string(pch, cch);
+    auto actualString = std::string(pch, cch);
     RETURN_BOOL_IF_FALSE(VERIFY_IS_GREATER_THAN(expectedOutput.size(),
                                                 static_cast<size_t>(0),
                                                 NoThrowString().Format(L"writing=\"%hs\", expecting %u strings", actualString.c_str(), expectedOutput.size())));
 
-    std::string first = expectedOutput.front();
+    auto first = expectedOutput.front();
     expectedOutput.pop_front();
 
     Log::Comment(NoThrowString().Format(L"Expected =\t\"%hs\"", first.c_str()));
@@ -182,7 +182,7 @@ void _verifySpanOfText(const wchar_t* const expectedChar,
                        const int start,
                        const int end)
 {
-    for (int x = start; x < end; x++)
+    for (auto x = start; x < end; x++)
     {
         SetVerifyOutput settings(VerifyOutputSettings::LogOnlyFailures);
         if (iter->Chars() != expectedChar)

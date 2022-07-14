@@ -51,6 +51,7 @@ static const std::array settingsLoadWarningsLabels {
     USES_RESOURCE(L"InvalidSplitSize"),
     USES_RESOURCE(L"FailedToParseStartupActions"),
     USES_RESOURCE(L"FailedToParseSubCommands"),
+    USES_RESOURCE(L"UnknownTheme"),
 };
 static const std::array settingsLoadErrorsLabels {
     USES_RESOURCE(L"NoProfilesText"),
@@ -122,10 +123,10 @@ static Documents::Run _BuildErrorRun(const winrt::hstring& text, const ResourceD
     textRun.Text(text);
 
     // Color the text red (light theme) or yellow (dark theme) based on the system theme
-    winrt::IInspectable key = winrt::box_value(L"ErrorTextBrush");
+    auto key = winrt::box_value(L"ErrorTextBrush");
     if (resources.HasKey(key))
     {
-        winrt::IInspectable g = resources.Lookup(key);
+        auto g = resources.Lookup(key);
         auto brush = g.try_as<winrt::Windows::UI::Xaml::Media::Brush>();
         textRun.Foreground(brush);
     }
@@ -292,7 +293,7 @@ namespace winrt::TerminalApp::implementation
                 _root->Maximized(true);
             }
 
-            if (WI_IsFlagSet(launchMode, LaunchMode::FullscreenMode))
+            if (WI_IsFlagSet(launchMode, LaunchMode::FullscreenMode) && !IsQuakeWindow())
             {
                 _root->SetFullscreen(true);
             }
@@ -367,11 +368,12 @@ namespace winrt::TerminalApp::implementation
         // details here, but it does have the desired effect.
         // It's not enough to set the theme on the dialog alone.
         auto themingLambda{ [this](const Windows::Foundation::IInspectable& sender, const RoutedEventArgs&) {
-            auto theme{ _settings.GlobalSettings().Theme() };
+            auto theme{ _settings.GlobalSettings().CurrentTheme() };
+            auto requestedTheme{ theme.RequestedTheme() };
             auto element{ sender.try_as<winrt::Windows::UI::Xaml::FrameworkElement>() };
             while (element)
             {
-                element.RequestedTheme(theme);
+                element.RequestedTheme(requestedTheme);
                 element = element.Parent().try_as<winrt::Windows::UI::Xaml::FrameworkElement>();
             }
         } };
@@ -601,7 +603,7 @@ namespace winrt::TerminalApp::implementation
 
         winrt::Windows::Foundation::Size proposedSize{};
 
-        const float scale = static_cast<float>(dpi) / static_cast<float>(USER_DEFAULT_SCREEN_DPI);
+        const auto scale = static_cast<float>(dpi) / static_cast<float>(USER_DEFAULT_SCREEN_DPI);
         if (const auto layout = _root->LoadPersistedLayout(_settings))
         {
             if (layout.InitialSize())
@@ -737,13 +739,7 @@ namespace winrt::TerminalApp::implementation
 
     winrt::Windows::UI::Xaml::ElementTheme AppLogic::GetRequestedTheme()
     {
-        if (!_loadedInitialSettings)
-        {
-            // Load settings if we haven't already
-            LoadSettings();
-        }
-
-        return _settings.GlobalSettings().Theme();
+        return Theme().RequestedTheme();
     }
 
     bool AppLogic::GetShowTabsInTitlebar()
@@ -781,7 +777,7 @@ namespace winrt::TerminalApp::implementation
     // - S_OK if we successfully parsed the settings, otherwise an appropriate HRESULT.
     [[nodiscard]] HRESULT AppLogic::_TryLoadSettings() noexcept
     {
-        HRESULT hr = E_FAIL;
+        auto hr = E_FAIL;
 
         try
         {
@@ -962,9 +958,16 @@ namespace winrt::TerminalApp::implementation
     }
     CATCH_LOG()
 
+    // Method Description:
+    // - Update the current theme of the application. This will trigger our
+    //   RequestedThemeChanged event, to have our host change the theme of the
+    //   root of the application.
+    // Arguments:
+    // - newTheme: The ElementTheme to apply to our elements.
     void AppLogic::_RefreshThemeRoutine()
     {
-        _ApplyTheme(_settings.GlobalSettings().Theme());
+        // Propagate the event to the host layer, so it can update its own UI
+        _RequestedThemeChangedHandlers(*this, Theme());
     }
 
     // Function Description:
@@ -1073,18 +1076,6 @@ namespace winrt::TerminalApp::implementation
         return _settings;
     }
 
-    // Method Description:
-    // - Update the current theme of the application. This will trigger our
-    //   RequestedThemeChanged event, to have our host change the theme of the
-    //   root of the application.
-    // Arguments:
-    // - newTheme: The ElementTheme to apply to our elements.
-    void AppLogic::_ApplyTheme(const Windows::UI::Xaml::ElementTheme& newTheme)
-    {
-        // Propagate the event to the host layer, so it can update its own UI
-        _RequestedThemeChangedHandlers(*this, newTheme);
-    }
-
     UIElement AppLogic::GetRoot() noexcept
     {
         return _root.as<winrt::Windows::UI::Xaml::Controls::Control>();
@@ -1120,6 +1111,22 @@ namespace winrt::TerminalApp::implementation
         if (_root)
         {
             _root->TitlebarClicked();
+        }
+    }
+
+    // Method Description:
+    // - Used to tell the PTY connection that the window visibility has changed.
+    //   The underlying PTY might need to expose window visibility status to the
+    //   client application for the `::GetConsoleWindow()` API.
+    // Arguments:
+    // - showOrHide - True is show; false is hide.
+    // Return Value:
+    // - <none>
+    void AppLogic::WindowVisibilityChanged(const bool showOrHide)
+    {
+        if (_root)
+        {
+            _root->WindowVisibilityChanged(showOrHide);
         }
     }
 
@@ -1201,6 +1208,19 @@ namespace winrt::TerminalApp::implementation
             return _root->TaskbarState();
         }
         return {};
+    }
+
+    winrt::Windows::UI::Xaml::Media::Brush AppLogic::TitlebarBrush()
+    {
+        if (_root)
+        {
+            return _root->TitlebarBrush();
+        }
+        return { nullptr };
+    }
+    void AppLogic::WindowActivated(const bool activated)
+    {
+        _root->WindowActivated(activated);
     }
 
     bool AppLogic::HasCommandlineArguments() const noexcept
@@ -1354,7 +1374,7 @@ namespace winrt::TerminalApp::implementation
             // now.
             if (parsedTarget.empty())
             {
-                int32_t windowId = WindowingBehaviorUseNew;
+                auto windowId = WindowingBehaviorUseNew;
                 switch (windowingBehavior)
                 {
                 case WindowingMode::UseNew:
@@ -1375,7 +1395,7 @@ namespace winrt::TerminalApp::implementation
             // window's ID:
             try
             {
-                int32_t windowId = ::base::saturated_cast<int32_t>(std::stoi(parsedTarget));
+                auto windowId = ::base::saturated_cast<int32_t>(std::stoi(parsedTarget));
 
                 // If the user provides _any_ negative number, then treat it as
                 // -1, for "use a new window".
@@ -1629,4 +1649,15 @@ namespace winrt::TerminalApp::implementation
     {
         return _settings.GlobalSettings().ShowTitleInTitlebar();
     }
+
+    Microsoft::Terminal::Settings::Model::Theme AppLogic::Theme()
+    {
+        if (!_loadedInitialSettings)
+        {
+            // Load settings if we haven't already
+            LoadSettings();
+        }
+        return _settings.GlobalSettings().CurrentTheme();
+    }
+
 }
