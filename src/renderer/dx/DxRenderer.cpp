@@ -245,19 +245,6 @@ bool DxEngine::_HasTerminalEffects() const noexcept
 }
 
 // Routine Description:
-// - Toggles terminal effects off and on. If no terminal effect is configured has no effect
-// Arguments:
-// Return Value:
-// - Void
-void DxEngine::ToggleShaderEffects() noexcept
-{
-    _terminalEffectsEnabled = !_terminalEffectsEnabled;
-    _recreateDeviceRequested = true;
-#pragma warning(suppress : 26447) // The function is declared 'noexcept' but calls function 'Log_IfFailed()' which may throw exceptions (f.6).
-    LOG_IF_FAILED(InvalidateAll());
-}
-
-// Routine Description:
 // - Loads pixel shader source depending on _retroTerminalEffect and _pixelShaderPath
 // Arguments:
 // Return Value:
@@ -446,9 +433,9 @@ HRESULT DxEngine::_SetupTerminalEffects()
     // Sampler state is needed to use texture as input to shader.
     D3D11_SAMPLER_DESC samplerDesc{};
     samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_BORDER;
+    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_BORDER;
+    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_BORDER;
     samplerDesc.MipLODBias = 0.0f;
     samplerDesc.MaxAnisotropy = 1;
     samplerDesc.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
@@ -744,7 +731,7 @@ try
     {
         try
         {
-            _pfn();
+            _pfn(_swapChainHandle.get());
         }
         CATCH_LOG(); // A failure in the notification function isn't a failure to prepare, so just log it and go on.
     }
@@ -834,7 +821,6 @@ static constexpr D2D1_ALPHA_MODE _dxgiAlphaToD2d1Alpha(DXGI_ALPHA_MODE mode) noe
         // 1234123412341234
         static constexpr std::array<float, 2> hyperlinkDashes{ 1.f, 3.f };
         RETURN_IF_FAILED(_d2dFactory->CreateStrokeStyle(&_dashStrokeStyleProperties, hyperlinkDashes.data(), gsl::narrow_cast<UINT32>(hyperlinkDashes.size()), &_dashStrokeStyle));
-        _hyperlinkStrokeStyle = _dashStrokeStyle;
 
         // If in composition mode, apply scaling factor matrix
         if (_chainMode == SwapChainMode::ForComposition)
@@ -880,6 +866,8 @@ void DxEngine::_ReleaseDeviceResources() noexcept
         _d2dBrushBackground.Reset();
 
         _d2dBitmap.Reset();
+
+        _softFont.Reset();
 
         if (nullptr != _d2dDeviceContext.Get() && _isPainting)
         {
@@ -994,7 +982,7 @@ try
 }
 CATCH_RETURN();
 
-void DxEngine::SetCallback(std::function<void()> pfn) noexcept
+void DxEngine::SetCallback(std::function<void(const HANDLE)> pfn) noexcept
 {
     _pfn = std::move(pfn);
 }
@@ -1022,6 +1010,11 @@ try
     }
 }
 CATCH_LOG()
+
+std::wstring_view DxEngine::GetPixelShaderPath() noexcept
+{
+    return _pixelShaderPath;
+}
 
 void DxEngine::SetPixelShaderPath(std::wstring_view value) noexcept
 try
@@ -1059,17 +1052,6 @@ try
     }
 }
 CATCH_LOG()
-
-HANDLE DxEngine::GetSwapChainHandle() noexcept
-{
-    if (!_swapChainHandle)
-    {
-#pragma warning(suppress : 26447) // The function is declared 'noexcept' but calls function 'Log_IfFailed()' which may throw exceptions (f.6).
-        LOG_IF_FAILED(_CreateDeviceResources(true));
-    }
-
-    return _swapChainHandle.get();
-}
 
 void DxEngine::_InvalidateRectangle(const til::rect& rc)
 {
@@ -1246,10 +1228,10 @@ CATCH_RETURN();
 // - <none> - Updates reference
 void _ScaleByFont(til::rect& cellsToPixels, til::size fontSize) noexcept
 {
-    cellsToPixels.left *= fontSize.cx;
-    cellsToPixels.right *= fontSize.cx;
-    cellsToPixels.top *= fontSize.cy;
-    cellsToPixels.bottom *= fontSize.cy;
+    cellsToPixels.left *= fontSize.width;
+    cellsToPixels.right *= fontSize.width;
+    cellsToPixels.top *= fontSize.height;
+    cellsToPixels.bottom *= fontSize.height;
 }
 
 // Routine Description:
@@ -1680,7 +1662,7 @@ CATCH_RETURN()
 // - fTrimLeft - Whether or not to trim off the left half of a double wide character
 // Return Value:
 // - S_OK or relevant DirectX error
-[[nodiscard]] HRESULT DxEngine::PaintBufferLine(const gsl::span<const Cluster> clusters,
+[[nodiscard]] HRESULT DxEngine::PaintBufferLine(const std::span<const Cluster> clusters,
                                                 const til::point coord,
                                                 const bool /*trimLeft*/,
                                                 const bool /*lineWrapped*/) noexcept
@@ -1689,12 +1671,22 @@ try
     // Calculate positioning of our origin.
     const auto origin = (coord * _fontRenderData->GlyphCell()).to_d2d_point();
 
-    // Create the text layout
-    RETURN_IF_FAILED(_customLayout->Reset());
-    RETURN_IF_FAILED(_customLayout->AppendClusters(clusters));
+    if (_usingSoftFont)
+    {
+        // We need to reset the clipping rect applied by the CustomTextRenderer,
+        // since the soft font will want to set its own clipping rect.
+        RETURN_IF_FAILED(_customRenderer->EndClip(_drawingContext.get()));
+        RETURN_IF_FAILED(_softFont.Draw(*_drawingContext, clusters, origin.x, origin.y));
+    }
+    else
+    {
+        // Create the text layout
+        RETURN_IF_FAILED(_customLayout->Reset());
+        RETURN_IF_FAILED(_customLayout->AppendClusters(clusters));
 
-    // Layout then render the text
-    RETURN_IF_FAILED(_customLayout->Draw(_drawingContext.get(), _customRenderer.Get(), origin.x, origin.y));
+        // Layout then render the text
+        RETURN_IF_FAILED(_customLayout->Draw(_drawingContext.get(), _customRenderer.Get(), origin.x, origin.y));
+    }
 
     return S_OK;
 }
@@ -1704,14 +1696,16 @@ CATCH_RETURN()
 // - Paints lines around cells (draws in pieces of the grid)
 // Arguments:
 // - lines - Which grid lines (top, left, bottom, right) to draw
-// - color - The color to use for drawing the lines
+// - gridlineColor - The color to use for drawing the gridlines
+// - underlineColor - The color to use for drawing the underlines
 // - cchLine - Length of the line to draw in character cells
 // - coordTarget - The X,Y character position in the grid where we should start drawing
 //               - We will draw rightward (+X) from here
 // Return Value:
 // - S_OK or relevant DirectX error
 [[nodiscard]] HRESULT DxEngine::PaintBufferGridLines(const GridLineSet lines,
-                                                     COLORREF const color,
+                                                     const COLORREF gridlineColor,
+                                                     const COLORREF underlineColor,
                                                      const size_t cchLine,
                                                      const til::point coordTarget) noexcept
 try
@@ -1719,19 +1713,19 @@ try
     const auto existingColor = _d2dBrushForeground->GetColor();
     const auto restoreBrushOnExit = wil::scope_exit([&]() noexcept { _d2dBrushForeground->SetColor(existingColor); });
 
-    _d2dBrushForeground->SetColor(_ColorFFromColorRef(color | 0xff000000));
-
     const auto font = _fontRenderData->GlyphCell().to_d2d_size();
-    const D2D_POINT_2F target = { coordTarget.X * font.width, coordTarget.Y * font.height };
+    const D2D_POINT_2F target = { coordTarget.x * font.width, coordTarget.y * font.height };
     const auto fullRunWidth = font.width * gsl::narrow_cast<unsigned>(cchLine);
 
     const auto DrawLine = [=](const auto x0, const auto y0, const auto x1, const auto y1, const auto strokeWidth) noexcept {
         _d2dDeviceContext->DrawLine({ x0, y0 }, { x1, y1 }, _d2dBrushForeground.Get(), strokeWidth, _strokeStyle.Get());
     };
 
-    const auto DrawHyperlinkLine = [=](const auto x0, const auto y0, const auto x1, const auto y1, const auto strokeWidth) noexcept {
-        _d2dDeviceContext->DrawLine({ x0, y0 }, { x1, y1 }, _d2dBrushForeground.Get(), strokeWidth, _hyperlinkStrokeStyle.Get());
+    const auto DrawDottedLine = [=](const auto x0, const auto y0, const auto x1, const auto y1, const auto strokeWidth) noexcept {
+        _d2dDeviceContext->DrawLine({ x0, y0 }, { x1, y1 }, _d2dBrushForeground.Get(), strokeWidth, _dashStrokeStyle.Get());
     };
+
+    _d2dBrushForeground->SetColor(_ColorFFromColorRef(gridlineColor | 0xff000000));
 
     // NOTE: Line coordinates are centered within the line, so they need to be
     // offset by half the stroke width. For the start coordinate we add half
@@ -1781,10 +1775,22 @@ try
         }
     }
 
+    if (lines.test(GridLines::Strikethrough))
+    {
+        const auto halfStrikethroughWidth = lineMetrics.strikethroughWidth / 2.0f;
+        const auto startX = target.x + halfStrikethroughWidth;
+        const auto endX = target.x + fullRunWidth - halfStrikethroughWidth;
+        const auto y = target.y + lineMetrics.strikethroughOffset;
+
+        DrawLine(startX, y, endX, y, lineMetrics.strikethroughWidth);
+    }
+
+    _d2dBrushForeground->SetColor(_ColorFFromColorRef(underlineColor | 0xff000000));
+
     // In the case of the underline and strikethrough offsets, the stroke width
     // is already accounted for, so they don't require further adjustments.
 
-    if (lines.any(GridLines::Underline, GridLines::DoubleUnderline, GridLines::HyperlinkUnderline))
+    if (lines.any(GridLines::Underline, GridLines::DoubleUnderline, GridLines::DottedUnderline, GridLines::HyperlinkUnderline))
     {
         const auto halfUnderlineWidth = lineMetrics.underlineWidth / 2.0f;
         const auto startX = target.x + halfUnderlineWidth;
@@ -1796,9 +1802,9 @@ try
             DrawLine(startX, y, endX, y, lineMetrics.underlineWidth);
         }
 
-        if (lines.test(GridLines::HyperlinkUnderline))
+        if (lines.any(GridLines::DottedUnderline, GridLines::HyperlinkUnderline))
         {
-            DrawHyperlinkLine(startX, y, endX, y, lineMetrics.underlineWidth);
+            DrawDottedLine(startX, y, endX, y, lineMetrics.underlineWidth);
         }
 
         if (lines.test(GridLines::DoubleUnderline))
@@ -1807,16 +1813,6 @@ try
             const auto y2 = target.y + lineMetrics.underlineOffset2;
             DrawLine(startX, y2, endX, y2, lineMetrics.underlineWidth);
         }
-    }
-
-    if (lines.test(GridLines::Strikethrough))
-    {
-        const auto halfStrikethroughWidth = lineMetrics.strikethroughWidth / 2.0f;
-        const auto startX = target.x + halfStrikethroughWidth;
-        const auto endX = target.x + fullRunWidth - halfStrikethroughWidth;
-        const auto y = target.y + lineMetrics.strikethroughOffset;
-
-        DrawLine(startX, y, endX, y, lineMetrics.strikethroughWidth);
     }
 
     return S_OK;
@@ -1844,6 +1840,14 @@ try
 
     _d2dDeviceContext->FillRectangle(draw, _d2dBrushForeground.Get());
 
+    return S_OK;
+}
+CATCH_RETURN()
+
+[[nodiscard]] HRESULT DxEngine::PaintSelections(const std::vector<til::rect>& rects) noexcept
+try
+{
+    UNREFERENCED_PARAMETER(rects);
     return S_OK;
 }
 CATCH_RETURN()
@@ -1933,8 +1937,9 @@ CATCH_RETURN()
 [[nodiscard]] HRESULT DxEngine::UpdateDrawingBrushes(const TextAttribute& textAttributes,
                                                      const RenderSettings& renderSettings,
                                                      const gsl::not_null<IRenderData*> /*pData*/,
-                                                     const bool /*usingSoftFont*/,
+                                                     const bool usingSoftFont,
                                                      const bool isSettingDefaultBrushes) noexcept
+try
 {
     const auto [colorForeground, colorBackground] = renderSettings.GetAttributeColorsWithAlpha(textAttributes);
 
@@ -1950,6 +1955,12 @@ CATCH_RETURN()
 
     _d2dBrushForeground->SetColor(_foregroundColor);
     _d2dBrushBackground->SetColor(_backgroundColor);
+
+    _usingSoftFont = usingSoftFont;
+    if (_usingSoftFont)
+    {
+        _softFont.SetColor(_foregroundColor);
+    }
 
     // If this flag is set, then we need to update the default brushes too and the swap chain background.
     if (isSettingDefaultBrushes)
@@ -1980,16 +1991,12 @@ CATCH_RETURN()
         _drawingContext->useItalicFont = textAttributes.IsItalic();
     }
 
-    if (textAttributes.IsHyperlink())
-    {
-        _hyperlinkStrokeStyle = (textAttributes.GetHyperlinkId() == _hyperlinkHoveredId) ? _strokeStyle : _dashStrokeStyle;
-    }
-
     // Update pixel shader settings as background color might have changed
     _ComputePixelShaderSettings();
 
     return S_OK;
 }
+CATCH_RETURN();
 
 // Routine Description:
 // - Updates the font used for drawing
@@ -2021,7 +2028,8 @@ try
     // Prepare the text layout.
     _customLayout = WRL::Make<CustomTextLayout>(_fontRenderData.get());
 
-    return S_OK;
+    // Inform the soft font of the new cell size so it can scale appropriately.
+    return _softFont.SetTargetSize(_fontRenderData->GlyphCell());
 }
 CATCH_RETURN();
 
@@ -2110,7 +2118,7 @@ CATCH_RETURN();
 // - area - Rectangle describing dirty area in characters.
 // Return Value:
 // - S_OK
-[[nodiscard]] HRESULT DxEngine::GetDirtyArea(gsl::span<const til::rect>& area) noexcept
+[[nodiscard]] HRESULT DxEngine::GetDirtyArea(std::span<const til::rect>& area) noexcept
 try
 {
     area = _invalidMap.runs();
@@ -2233,6 +2241,7 @@ try
     {
         _antialiasingMode = antialiasingMode;
         _recreateDeviceRequested = true;
+        LOG_IF_FAILED(_softFont.SetAntialiasing(antialiasingMode != D2D1_TEXT_ANTIALIAS_MODE_ALIASED));
         LOG_IF_FAILED(InvalidateAll());
     }
 }
@@ -2274,6 +2283,24 @@ void DxEngine::UpdateHyperlinkHoveredId(const uint16_t hoveredId) noexcept
 {
     _hyperlinkHoveredId = hoveredId;
 }
+
+// Routine Description:
+// - This method will replace the active soft font with the given bit pattern.
+// Arguments:
+// - bitPattern - An array of scanlines representing all the glyphs in the font.
+// - cellSize - The cell size for an individual glyph.
+// - centeringHint - The horizontal extent that glyphs are offset from center.
+// Return Value:
+// - S_OK if successful. E_FAIL if there was an error.
+HRESULT DxEngine::UpdateSoftFont(const std::span<const uint16_t> bitPattern,
+                                 const til::size cellSize,
+                                 const size_t centeringHint) noexcept
+try
+{
+    _softFont.SetFont(bitPattern, cellSize, _fontRenderData->GlyphCell(), centeringHint);
+    return S_OK;
+}
+CATCH_RETURN();
 
 // Method Description:
 // - Informs this render engine about certain state for this frame at the
@@ -2322,8 +2349,8 @@ void DxEngine::UpdateHyperlinkHoveredId(const uint16_t hoveredId) noexcept
 // Return Value:
 // - S_OK if successful. S_FALSE if already set. E_FAIL if there was an error.
 [[nodiscard]] HRESULT DxEngine::PrepareLineTransform(const LineRendition lineRendition,
-                                                     const size_t targetRow,
-                                                     const size_t viewportLeft) noexcept
+                                                     const til::CoordType targetRow,
+                                                     const til::CoordType viewportLeft) noexcept
 {
     auto lineTransform = D2D1::Matrix3x2F{ 0, 0, 0, 0, 0, 0 };
     const auto fontSize = _fontRenderData->GlyphCell();

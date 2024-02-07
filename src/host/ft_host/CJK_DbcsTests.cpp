@@ -2,9 +2,11 @@
 // Licensed under the MIT license.
 
 #include "precomp.h"
+
 #include <io.h>
 #include <fcntl.h>
-#include <iostream>
+
+#include "../../types/inc/IInputEvent.hpp"
 
 #define JAPANESE_CP 932u
 
@@ -80,8 +82,7 @@ namespace DbcsWriteRead
                         const bool fReadUnicode,
                         CharInfoPattern& rgChars);
 
-    void Verify(const CharInfoPattern& rgExpected,
-                const CharInfoPattern& rgActual);
+    void Verify(std::span<CHAR_INFO> rgExpected, std::span<CHAR_INFO> rgActual);
 
     void PrepExpected(
         const WORD wAttrWritten,
@@ -116,6 +117,7 @@ class DbcsTests
     // This test must come before ones that launch another process as launching another process can tamper with the codepage
     // in ways that this test is not expecting.
     TEST_METHOD(TestMultibyteInputRetrieval);
+    TEST_METHOD(TestMultibyteInputCoalescing);
 
     BEGIN_TEST_METHOD(TestDbcsWriteRead)
         TEST_METHOD_PROPERTY(L"Data:fUseTrueTypeFont", L"{true, false}")
@@ -152,6 +154,14 @@ class DbcsTests
     END_TEST_METHOD()
 
     BEGIN_TEST_METHOD(TestDbcsStdCoutScenario)
+        TEST_METHOD_PROPERTY(L"IsolationLevel", L"Method")
+    END_TEST_METHOD()
+
+    BEGIN_TEST_METHOD(TestDbcsBackupRestore)
+        TEST_METHOD_PROPERTY(L"IsolationLevel", L"Method")
+    END_TEST_METHOD()
+
+    BEGIN_TEST_METHOD(TestInvalidTrailer)
         TEST_METHOD_PROPERTY(L"IsolationLevel", L"Method")
     END_TEST_METHOD()
 };
@@ -418,7 +428,7 @@ namespace PrepPattern
     static constexpr WORD leading = COMMON_LVB_LEADING_BYTE;
     static constexpr WORD trailing = COMMON_LVB_TRAILING_BYTE;
 
-    constexpr void replaceColorPlaceholders(CharInfoPattern& pattern, WORD attr)
+    constexpr void replaceColorPlaceholders(std::span<CHAR_INFO> pattern, WORD attr)
     {
         for (auto& info : pattern)
         {
@@ -509,6 +519,49 @@ namespace PrepPattern
         makeCharInfo(0x0055, colored),
         makeCharInfo(0x0054, colored),
         makeCharInfo(0x306b, colored),
+        makeCharInfo(0x0020, white),
+        makeCharInfo(0x0020, white),
+        makeCharInfo(0x0020, white),
+        makeCharInfo(0x0020, white),
+    };
+
+    // Receive Output Table:
+    // attr  | wchar  (char) | symbol
+    // ------------------------------------
+    // 0x029 | 0x0051 (0x51) | Q
+    // 0x029 | 0x0000 (0x00) | <null>
+    // 0x029 | 0x0000 (0x00) | <null>
+    // 0x029 | 0x0000 (0x00) | <null>
+    // 0x029 | 0x005A (0x5A) | Z
+    // 0x029 | 0x0059 (0x59) | Y
+    // 0x029 | 0x0058 (0x58) | X
+    // 0x029 | 0x0057 (0x57) | W
+    // 0x029 | 0x0056 (0x56) | V
+    // 0x029 | 0x0055 (0x55) | U
+    // 0x029 | 0x0054 (0x54) | T
+    // 0x029 | 0x0000 (0x00) | <null>
+    // 0x007 | 0x0020 (0x20) | <space>
+    // 0x007 | 0x0020 (0x20) | <space>
+    // 0x007 | 0x0020 (0x20) | <space>
+    // 0x007 | 0x0020 (0x20) | <space>
+    // ...
+    // "Space Padded" means any unused data in the buffer will be filled with spaces and the default attribute.
+    // "Dedupe" means that any full-width characters in the buffer will be returned as single copies.
+    //    But due to the target being a DBCS character set that can't represent these in a single char, it's null.
+    // "A" means that we intend in-codepage (char) data to be browsed in the resulting struct
+    static constexpr CharInfoPattern SpacePaddedDedupeInvalidA{
+        makeCharInfo(0x0051, colored),
+        makeCharInfo(0x0000, colored),
+        makeCharInfo(0x0000, colored),
+        makeCharInfo(0x0000, colored),
+        makeCharInfo(0x005a, colored),
+        makeCharInfo(0x0059, colored),
+        makeCharInfo(0x0058, colored),
+        makeCharInfo(0x0057, colored),
+        makeCharInfo(0x0056, colored),
+        makeCharInfo(0x0055, colored),
+        makeCharInfo(0x0054, colored),
+        makeCharInfo(0x0000, colored),
         makeCharInfo(0x0020, white),
         makeCharInfo(0x0020, white),
         makeCharInfo(0x0020, white),
@@ -689,93 +742,6 @@ namespace PrepPattern
     // attr  | wchar  (char) | symbol
     // ------------------------------------
     // 0x029 | 0x0051 (0x51) | Q
-    // 0x129 | 0x3044 (0x44) | Hiragana I
-    // 0x229 | 0xFFFF (0xFF) | Invalid Unicode Character
-    // 0x129 | 0x304B (0x4B) | Hiragana KA
-    // 0x229 | 0xFFFF (0xFF) | Invalid Unicode Character
-    // 0x129 | 0x306A (0x6A) | Hiragana NA
-    // 0x229 | 0xFFFF (0xFF) | Invalid Unicode Character
-    // 0x029 | 0x005A (0x5A) | Z
-    // 0x029 | 0x0059 (0x59) | Y
-    // 0x029 | 0x0058 (0x58) | X
-    // 0x029 | 0x0057 (0x57) | W
-    // 0x029 | 0x0056 (0x56) | V
-    // 0x029 | 0x0055 (0x55) | U
-    // 0x029 | 0x0054 (0x54) | T
-    // 0x129 | 0x306B (0x6B) | Hiragana NI
-    // 0x229 | 0xFFFF (0xFF) | Invalid Unicode Character
-    // ...
-    // "Doubled" means that any full-width characters in the buffer are returned twice with a leading and trailing byte marker.
-    // "W" means that we intend Unicode data to be browsed in the resulting struct (even though wchar and char are unioned.)
-    // "NegativeOneTrailing" means that all trailing bytes have their character replaced with the value -1 or 0xFFFF
-    static constexpr CharInfoPattern DoubledWNegativeOneTrailing{
-        makeCharInfo(0x0051, colored),
-        makeCharInfo(0x3044, colored | leading),
-        makeCharInfo(0xffff, colored | trailing),
-        makeCharInfo(0x304b, colored | leading),
-        makeCharInfo(0xffff, colored | trailing),
-        makeCharInfo(0x306a, colored | leading),
-        makeCharInfo(0xffff, colored | trailing),
-        makeCharInfo(0x005a, colored),
-        makeCharInfo(0x0059, colored),
-        makeCharInfo(0x0058, colored),
-        makeCharInfo(0x0057, colored),
-        makeCharInfo(0x0056, colored),
-        makeCharInfo(0x0055, colored),
-        makeCharInfo(0x0054, colored),
-        makeCharInfo(0x306b, colored | leading),
-        makeCharInfo(0xffff, colored | trailing),
-    };
-
-    // Receive Output Table:
-    // attr  | wchar  (char) | symbol
-    // ------------------------------------
-    // 0x029 | 0x0051 (0x51) | Q
-    // 0x129 | 0x3082 (0x82) | Hiragana I Unicode 0x3044 with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0xFFA2 (0xA2) | Invalid Unicode Character 0xFFFF with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xA2
-    // 0x129 | 0x3082 (0x82) | Hiragana KA Unicode 0x304B with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0xFFA9 (0xA9) | Invalid Unicode Character 0xFFFF with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xA9
-    // 0x129 | 0x3082 (0x82) | Hiragana NA 0x306A with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0xFFC8 (0xC8) | Invalid Unicode Character 0xFFFF with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xC8
-    // 0x029 | 0x005A (0x5A) | Z
-    // 0x029 | 0x0059 (0x59) | Y
-    // 0x029 | 0x0058 (0x58) | X
-    // 0x029 | 0x0057 (0x57) | W
-    // 0x029 | 0x0056 (0x56) | V
-    // 0x007 | 0x0020 (0x20) | <space>
-    // 0x007 | 0x0020 (0x20) | <space>
-    // 0x007 | 0x0020 (0x20) | <space>
-    // 0x007 | 0x0020 (0x20) | <space>
-    // ...
-    // "AStompsW" means that the Unicode characters were fit into the result buffer first, then the Multibyte conversion
-    //     was written over the top of the lower byte. This makes an invalid Unicode character, but can be understood
-    //     as in-codepage from the char portion of the union.
-    // "NegativeOnePattern" means that every trailing byte started as -1 or 0xFFFF
-    // "TruncateSpacePadded" means that we only allowed ourselves to return as many characters as is in the unicode length
-    //     of the string and then filled the rest of the buffer after that with spaces.
-    static constexpr CharInfoPattern AStompsWNegativeOnePatternTruncateSpacePadded{
-        makeCharInfo(0x0051, colored),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0xffa2, colored | trailing),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0xffa9, colored | trailing),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0xffc8, colored | trailing),
-        makeCharInfo(0x005a, colored),
-        makeCharInfo(0x0059, colored),
-        makeCharInfo(0x0058, colored),
-        makeCharInfo(0x0057, colored),
-        makeCharInfo(0x0056, colored),
-        makeCharInfo(0x0020, white),
-        makeCharInfo(0x0020, white),
-        makeCharInfo(0x0020, white),
-        makeCharInfo(0x0020, white),
-    };
-
-    // Receive Output Table:
-    // attr  | wchar  (char) | symbol
-    // ------------------------------------
-    // 0x029 | 0x0051 (0x51) | Q
     // 0x129 | 0x0082 (0x82) | Hiragana I Shift-JIS Codepage 932 Lead Byte
     // 0x229 | 0x00A2 (0xA2) | Hiragana I Shift-JIS Codepage 932 Trail Byte
     // 0x129 | 0x0082 (0x82) | Hiragana KA Shift-JIS Codepage 932 Lead Byte
@@ -942,138 +908,6 @@ namespace PrepPattern
     // attr  | wchar  (char) | symbol
     // ------------------------------------
     // 0x029 | 0x0051 (0x51) | Q
-    // 0x129 | 0x3082 (0x82) | Hiragana I Unicode 0x3044 with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0xFFA2 (0xA2) | Invalid Unicode Character 0xFFFF with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xA2
-    // 0x129 | 0x3082 (0x82) | Hiragana KA Unicode 0x304B with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0xFFA9 (0xA9) | Invalid Unicode Character 0xFFFF with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xA9
-    // 0x129 | 0x3082 (0x82) | Hiragana NA 0x306A with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0xFFC8 (0xC8) | Invalid Unicode Character 0xFFFF with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xC8
-    // 0x029 | 0x005A (0x5A) | Z
-    // 0x029 | 0x0059 (0x59) | Y
-    // 0x029 | 0x0058 (0x58) | X
-    // 0x029 | 0x0057 (0x57) | W
-    // 0x029 | 0x0056 (0x56) | V
-    // 0x029 | 0x0055 (0x55) | U
-    // 0x029 | 0x0054 (0x54) | T
-    // 0x129 | 0x3082 (0x30) | Hiragana NI 0x306B with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0xFFC9 (0xC9) | Invalid Unicode Character 0xFFFF with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xC9
-    // ...
-    // "AOn" means that the Unicode characters were fit into the result buffer first, then the Multibyte conversion
-    //     was written over the top of the lower byte. This makes an invalid Unicode character, but can be understood
-    //     as in-codepage from the char portion of the union.
-    // "DoubledW" means that the full-width Unicode characters were inserted twice into the buffer (and marked lead/trailing)
-    // "NegativeOneTrailing" means that every trailing byte started as -1 or 0xFFFF
-    static constexpr CharInfoPattern AOnDoubledWNegativeOneTrailing{
-        makeCharInfo(0x0051, colored),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0xffa2, colored | trailing),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0xffa9, colored | trailing),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0xffc8, colored | trailing),
-        makeCharInfo(0x005a, colored),
-        makeCharInfo(0x0059, colored),
-        makeCharInfo(0x0058, colored),
-        makeCharInfo(0x0057, colored),
-        makeCharInfo(0x0056, colored),
-        makeCharInfo(0x0055, colored),
-        makeCharInfo(0x0054, colored),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0xffc9, colored | trailing),
-    };
-
-    // Receive Output Table:
-    // attr  | wchar  (char) | symbol
-    // ------------------------------------
-    // 0x029 | 0x0051 (0x51) | Q
-    // 0x129 | 0x3082 (0x82) | Hiragana I Unicode 0x3044 with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0xFFA2 (0xA2) | Invalid Unicode Character 0xFFFF with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xA2
-    // 0x129 | 0x3082 (0x82) | Hiragana I Unicode 0x3044 with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0xFFA2 (0xA2) | Invalid Unicode Character 0xFFFF with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xA2
-    // 0x129 | 0x3082 (0x82) | Hiragana KA Unicode 0x304B with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0xFFA9 (0xA9) | Invalid Unicode Character 0xFFFF with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xA9
-    // 0x129 | 0x3082 (0x82) | Hiragana KA Unicode 0x304B with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0xFFA9 (0xA9) | Invalid Unicode Character 0xFFFF with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xA9
-    // 0x129 | 0x3082 (0x82) | Hiragana NA 0x306A with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0xFFC8 (0xC8) | Invalid Unicode Character 0xFFFF with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xC8
-    // 0x129 | 0x3082 (0x82) | Hiragana NA 0x306A with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0xFFC8 (0xC8) | Invalid Unicode Character 0xFFFF with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xC8
-    // 0x029 | 0x005A (0x5A) | Z
-    // 0x029 | 0x0059 (0x59) | Y
-    // 0x029 | 0x0058 (0x58) | X
-    // ...
-    // "AOn" means that the Unicode characters were fit into the result buffer first, then the Multibyte conversion
-    //     was written over the top of the lower byte. This makes an invalid Unicode character, but can be understood
-    //     as in-codepage from the char portion of the union.
-    // "DoubledW" means that the full-width Unicode characters were inserted twice into the buffer (and marked lead/trailing)
-    // "NegativeOneTrailing" means that every trailing byte started as -1 or 0xFFFF
-    static constexpr CharInfoPattern AOnDoubleDoubledWNegativeOneTrailing{
-        makeCharInfo(0x0051, colored),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0xffa2, colored | trailing),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0xffa2, colored | trailing),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0xffa9, colored | trailing),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0xffa9, colored | trailing),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0xffc8, colored | trailing),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0xffc8, colored | trailing),
-        makeCharInfo(0x005a, colored),
-        makeCharInfo(0x0059, colored),
-        makeCharInfo(0x0058, colored),
-    };
-
-    // Receive Output Table:
-    // attr  | wchar  (char) | symbol
-    // ------------------------------------
-    // 0x029 | 0x0051 (0x51) | Q
-    // 0x129 | 0x3082 (0x82) | Hiragana I Unicode 0x3044 with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0x30A2 (0xA2) | Hiragana I Unicode 0x3044 with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xA2
-    // 0x129 | 0x3082 (0x82) | Hiragana KA Unicode 0x304B with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0x30A9 (0xA9) | Hiragana KA Unicode 0x304B with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xA9
-    // 0x129 | 0x3082 (0x82) | Hiragana NA 0x306A with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0x39C8 (0xC8) | Hiragana NA 0x306A with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xC8
-    // 0x029 | 0x005A (0x5A) | Z
-    // 0x029 | 0x0059 (0x59) | Y
-    // 0x029 | 0x0058 (0x58) | X
-    // 0x029 | 0x0057 (0x57) | W
-    // 0x029 | 0x0056 (0x56) | V
-    // 0x029 | 0x0055 (0x55) | U
-    // 0x029 | 0x0054 (0x54) | T
-    // 0x129 | 0x3082 (0x30) | Hiragana NI 0x306B with the lower byte covered by Shift-JIS Codepage 932 Lead Byte 0x82.
-    // 0x229 | 0x30C9 (0xC9) | Hiragana NI 0x306B with the lower byte covered by Shift-JIS Codepage 932 Trail Byte 0xC9
-    // ...
-    // "AOn" means that the Unicode characters were fit into the result buffer first, then the Multibyte conversion
-    //     was written over the top of the lower byte. This makes an invalid Unicode character, but can be understood
-    //     as in-codepage from the char portion of the union.
-    // "DoubledW" means that the full-width Unicode characters were inserted twice into the buffer (and marked lead/trailing)
-    // "NegativeOneTrailing" means that every trailing byte started as -1 or 0xFFFF
-    static constexpr CharInfoPattern AOnDoubledW{
-        makeCharInfo(0x0051, colored),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0x30a2, colored | trailing),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0x30a9, colored | trailing),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0x30c8, colored | trailing),
-        makeCharInfo(0x005a, colored),
-        makeCharInfo(0x0059, colored),
-        makeCharInfo(0x0058, colored),
-        makeCharInfo(0x0057, colored),
-        makeCharInfo(0x0056, colored),
-        makeCharInfo(0x0055, colored),
-        makeCharInfo(0x0054, colored),
-        makeCharInfo(0x3082, colored | leading),
-        makeCharInfo(0x30c9, colored | trailing),
-    };
-
-    // Receive Output Table:
-    // attr  | wchar  (char) | symbol
-    // ------------------------------------
-    // 0x029 | 0x0051 (0x51) | Q
     // 0x129 | 0x3044 (0x44) | Hiragana I
     // 0x229 | 0x304B (0x4B) | Hiragana KA
     // 0x129 | 0x306A (0x6A) | Hiragana NA
@@ -1195,16 +1029,15 @@ const CharInfoPattern& DbcsWriteRead::PrepReadConsoleOutput(
             {
                 if (fIsTrueTypeFont)
                 {
-                    // When written with WriteConsoleOutputW and read back with ReadConsoleOutputA under TT font, we will get a deduplicated
-                    // set of Unicode characters (YES. Unicode characters despite calling the A API to read back) that is space padded out
-                    // There will be no lead/trailing markings.
-                    return PrepPattern::SpacePaddedDedupeW;
+                    // Normally this would be SpacePaddedDedupeA (analogous to the SpacePaddedDedupeW above), but since the narrow
+                    // unicode chars can't be represented as narrow DBCS (since those don't exist) we get SpacePaddedDedupeInvalidA.
+                    return PrepPattern::SpacePaddedDedupeInvalidA;
                 }
                 else
                 {
                     // When written with WriteConsoleOutputW and read back with ReadConsoleOutputA under Raster font, we will get the
                     // double-byte sequences stomped on top of a Unicode filled CHAR_INFO structure that used -1 for trailing bytes.
-                    return PrepPattern::AStompsWNegativeOnePatternTruncateSpacePadded;
+                    return PrepPattern::SpacePaddedDedupeA;
                 }
             }
             break;
@@ -1227,13 +1060,13 @@ const CharInfoPattern& DbcsWriteRead::PrepReadConsoleOutput(
                 if (fIsTrueTypeFont)
                 {
                     // In a TrueType font, we will get back Unicode characters doubled up and marked with leading and trailing bytes.
-                    return PrepPattern::AOnDoubledW;
+                    return PrepPattern::A;
                 }
                 else
                 {
-                    // When written with WriteConsoleOutputW and read back with ReadConsoleOutputA under Raster font, we will get the
-                    // double-byte sequences stomped on top of a Unicode filled CHAR_INFO structure that used -1 for trailing bytes.
-                    return PrepPattern::AOnDoubleDoubledWNegativeOneTrailing;
+                    // When written with WriteConsoleOutputW and read back with ReadConsoleOutputA under Raster font,
+                    // we will get the double-byte sequences doubled up, because each narrow cell is written as a DBCS separately.
+                    return PrepPattern::DoubledA;
                 }
             }
             break;
@@ -1242,10 +1075,9 @@ const CharInfoPattern& DbcsWriteRead::PrepReadConsoleOutput(
             {
                 if (fIsTrueTypeFont)
                 {
-                    // When written with WriteConsoleOutputA and read back with ReadConsoleOutputW when the font is TrueType,
-                    // we will get back Unicode characters doubled up and marked with leading and trailing bytes...
-                    // ... except all the trailing bytes character values will be -1.
-                    return PrepPattern::DoubledWNegativeOneTrailing;
+                    // When written with WriteConsoleOutputW and read back with ReadConsoleOutputA when the font is TrueType,
+                    // we will get back Unicode characters doubled up and marked with leading and trailing bytes.
+                    return PrepPattern::DoubledW;
                 }
                 else
                 {
@@ -1258,7 +1090,7 @@ const CharInfoPattern& DbcsWriteRead::PrepReadConsoleOutput(
             {
                 // When written with WriteConsoleOutputA and read back with ReadConsoleOutputA,
                 // we will get back the double-byte sequences appropriately labeled with leading/trailing bytes.
-                return PrepPattern::AOnDoubledWNegativeOneTrailing;
+                return PrepPattern::A;
             }
             break;
         }
@@ -1285,7 +1117,7 @@ const CharInfoPattern& DbcsWriteRead::PrepReadConsoleOutput(
         {
             // If we wrote with the CRT and are reading with A functions, the font doesn't matter.
             // We will always get back the double-byte sequences appropriately labeled with leading/trailing bytes.
-            return PrepPattern::AOnDoubledW;
+            return PrepPattern::A;
         }
         break;
     default:
@@ -1491,9 +1323,9 @@ void DbcsWriteRead::RetrieveOutput(const HANDLE hOut,
     }
 }
 
-void DbcsWriteRead::Verify(const CharInfoPattern& rgExpected,
-                           const CharInfoPattern& rgActual)
+void DbcsWriteRead::Verify(std::span<CHAR_INFO> rgExpected, std::span<CHAR_INFO> rgActual)
 {
+    VERIFY_ARE_EQUAL(rgExpected.size(), rgActual.size());
     // We will walk through for the number of CHAR_INFOs expected.
     for (size_t i = 0; i < rgExpected.size(); i++)
     {
@@ -1911,8 +1743,7 @@ void DbcsTests::TestDbcsBisectWriteCellsBeginA()
     const auto originalReadRegion = readRegion;
     CHAR_INFO readCell;
 
-    CHAR_INFO expectedCell;
-    expectedCell.Char.UnicodeChar = L'\xffff';
+    CHAR_INFO expectedCell{};
     expectedCell.Char.AsciiChar = originalCell.Char.AsciiChar;
     expectedCell.Attributes = originalCell.Attributes;
     WI_ClearAllFlags(expectedCell.Attributes, COMMON_LVB_LEADING_BYTE | COMMON_LVB_TRAILING_BYTE);
@@ -2078,6 +1909,34 @@ void DbcsTests::TestMultibyteInputRetrieval()
     FlushConsoleInputBuffer(hIn);
 }
 
+// This test ensures that two separate WriteConsoleInputA with trailing/leading DBCS are joined (coalesced) into a single wide character.
+void DbcsTests::TestMultibyteInputCoalescing()
+{
+    SetConsoleCP(932);
+
+    const auto in = GetStdHandle(STD_INPUT_HANDLE);
+    FlushConsoleInputBuffer(in);
+
+    DWORD count;
+    {
+        const auto record = SynthesizeKeyEvent(true, 1, 123, 456, 0x82, 789);
+        VERIFY_WIN32_BOOL_SUCCEEDED(WriteConsoleInputA(in, &record, 1, &count));
+    }
+    {
+        const auto record = SynthesizeKeyEvent(true, 1, 234, 567, 0xA2, 890);
+        VERIFY_WIN32_BOOL_SUCCEEDED(WriteConsoleInputA(in, &record, 1, &count));
+    }
+
+    // Asking for 2 records and asserting we only got 1 ensures
+    // that we receive the exact number of expected records.
+    INPUT_RECORD actual[2];
+    VERIFY_WIN32_BOOL_SUCCEEDED(ReadConsoleInputW(in, &actual[0], 2, &count));
+    VERIFY_ARE_EQUAL(1u, count);
+
+    const auto expected = SynthesizeKeyEvent(true, 1, 123, 456, L'い', 789);
+    VERIFY_ARE_EQUAL(expected, actual[0]);
+}
+
 void DbcsTests::TestDbcsOneByOne()
 {
     const auto hOut = GetStdOutputHandle();
@@ -2216,4 +2075,111 @@ void DbcsTests::TestDbcsStdCoutScenario()
     VERIFY_WIN32_BOOL_SUCCEEDED(ReadConsoleOutputCharacterA(hOut, psReadBack.get(), cchReadBack, coordReadPos, &dwRead), L"Read back std::cout line.");
     VERIFY_ARE_EQUAL(cchReadBack, dwRead, L"We should have read as many characters as we expected (length of original printed line.)");
     VERIFY_ARE_EQUAL(String(test), String(psReadBack.get()), L"String should match what we wrote.");
+}
+
+// Read/WriteConsoleOutput allow a user to implement a restricted form of buffer "backup" and "restore".
+// But what if the saved region clips ("bisects") a wide character? This test ensures that we restore proper
+// wide characters when given an unpaired trailing/leading CHAR_INFO in the first/last column of the given region.
+// In other words, writing a trailing CHAR_INFO will also automatically write a leading CHAR_INFO in the preceding cell.
+void DbcsTests::TestDbcsBackupRestore()
+{
+    static_assert(PrepPattern::DoubledW.size() == 16);
+
+    const auto out = GetStdHandle(STD_OUTPUT_HANDLE);
+
+    // We backup/restore 2 lines at once to ensure that it works even then. After all, an incorrect implementation
+    // might ignore all but the absolutely first CHAR_INFO instead of handling the first CHAR_INFO *on each row*.
+    std::array<CHAR_INFO, 32> expected;
+    std::ranges::copy(PrepPattern::DoubledW, expected.begin() + 0);
+    std::ranges::copy(PrepPattern::DoubledW, expected.begin() + 16);
+
+    PrepPattern::replaceColorPlaceholders(expected, FOREGROUND_BLUE | FOREGROUND_INTENSITY | BACKGROUND_GREEN);
+
+    // DoubledW will show up like this in the top/left corner of the terminal:
+    // +----------------
+    // |QいかなZYXWVUTに
+    // |QいかなZYXWVUTに
+    //
+    // Since those 4 Japanese characters probably aren't going to be monospace for you in your editor
+    // (as they most likely aren't exactly 2 ASCII characters wide), I'll continue referring to them like this:
+    // +----------------
+    // |QaabbccZYXWVUTdd
+    // |QaabbccZYXWVUTdd
+    {
+        SMALL_RECT region{ 0, 0, 15, 1 };
+        VERIFY_WIN32_BOOL_SUCCEEDED(WriteConsoleOutputW(out, expected.data(), { 16, 2 }, {}, &region));
+    }
+
+    // Make a "backup" of the viewport. The twist is that our backup region only
+    // copies the trailing/leading half of the first/last glyph respectively like so:
+    // +----------------
+    // |  abbccZYXWVUTd
+    std::array<CHAR_INFO, 26> backup{};
+    constexpr COORD backupSize{ 13, 2 };
+    SMALL_RECT backupRegion{ 2, 0, 14, 1 };
+    VERIFY_WIN32_BOOL_SUCCEEDED(ReadConsoleOutputW(out, backup.data(), backupSize, {}, &backupRegion));
+
+    // Destroy the text with some narrow ASCII characters, resulting in:
+    // +----------------
+    // |Qxxxxxxxxxxxxxxx
+    // |Qxxxxxxxxxxxxxxx
+    {
+        DWORD ignored;
+        VERIFY_WIN32_BOOL_SUCCEEDED(FillConsoleOutputCharacterW(out, L'x', 15, { 1, 0 }, &ignored));
+        VERIFY_WIN32_BOOL_SUCCEEDED(FillConsoleOutputCharacterW(out, L'x', 15, { 1, 1 }, &ignored));
+    }
+
+    // Restore our "backup". The trailing half of the first wide glyph (indicated as "a" above)
+    // as well as the leading half of the last wide glyph ("d"), will automatically get a
+    // matching leading/trailing half respectively. In other words, this:
+    // +----------------
+    // |  abbccZYXWVUTd
+    // |  abbccZYXWVUTd
+    //
+    // turns into this:
+    // +----------------
+    // | aabbccZYXWVUTdd
+    // | aabbccZYXWVUTdd
+    //
+    // and so we restore this, overwriting all the "x" characters in the process:
+    // +----------------
+    // |QいかなZYXWVUTに
+    // |QいかなZYXWVUTに
+    VERIFY_WIN32_BOOL_SUCCEEDED(WriteConsoleOutputW(out, backup.data(), backupSize, {}, &backupRegion));
+
+    std::array<CHAR_INFO, 32> infos{};
+    {
+        SMALL_RECT region{ 0, 0, 15, 1 };
+        VERIFY_WIN32_BOOL_SUCCEEDED(ReadConsoleOutputW(out, infos.data(), { 16, 2 }, {}, &region));
+    }
+    DbcsWriteRead::Verify(expected, infos);
+}
+
+// As tested by TestDbcsBackupRestore(), we do want to allow users to write trailers into the buffer, to allow
+// for an area of the buffer to be backed up and restored via Read/WriteConsoleOutput. But apart from that use
+// case, we'd generally do best to avoid trailers whenever possible, as conhost basically ignored them in the
+// past and only rendered leaders. Applications might now be relying on us effectively ignoring trailers.
+void DbcsTests::TestInvalidTrailer()
+{
+    auto expected = PrepPattern::DoubledW;
+    auto input = expected;
+    decltype(input) output{};
+
+    for (auto& v : input)
+    {
+        if (WI_IsFlagSet(v.Attributes, COMMON_LVB_TRAILING_BYTE))
+        {
+            v.Char.UnicodeChar = 0xfffd;
+        }
+    }
+
+    {
+        static constexpr COORD bufferSize{ 16, 1 };
+        SMALL_RECT region{ 0, 0, 15, 0 };
+        const auto out = GetStdHandle(STD_OUTPUT_HANDLE);
+        VERIFY_WIN32_BOOL_SUCCEEDED(WriteConsoleOutputW(out, input.data(), bufferSize, {}, &region));
+        VERIFY_WIN32_BOOL_SUCCEEDED(ReadConsoleOutputW(out, output.data(), bufferSize, {}, &region));
+    }
+
+    DbcsWriteRead::Verify(expected, output);
 }

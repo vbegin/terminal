@@ -4,6 +4,7 @@
 #include "pch.h"
 #include "AppCommandlineArgs.h"
 #include "../types/inc/utils.hpp"
+#include "TerminalSettingsModel/ModelSerializationHelpers.h"
 #include <LibraryResources.h>
 
 using namespace winrt::Microsoft::Terminal::Settings::Model;
@@ -96,7 +97,7 @@ int AppCommandlineArgs::ParseCommand(const Commandline& command)
 }
 
 // Method Description:
-// - Calls App::exit() for the provided command, and collects it's output into
+// - Calls App::exit() for the provided command, and collects its output into
 //   our _exitMessage buffer.
 // Arguments:
 // - command: Either the root App object, or a subcommand for which to call exit() on.
@@ -182,6 +183,15 @@ void AppCommandlineArgs::_buildParser()
     auto focus = _app.add_flag_function("-f,--focus", focusCallback, RS_A(L"CmdFocusDesc"));
     maximized->excludes(fullscreen);
     focus->excludes(fullscreen);
+
+    auto positionCallback = [this](std::string string) {
+        _position = LaunchPositionFromString(string);
+    };
+    _app.add_option_function<std::string>("--pos", positionCallback, RS_A(L"CmdPositionDesc"));
+    auto sizeCallback = [this](std::string string) {
+        _size = SizeFromString(string);
+    };
+    _app.add_option_function<std::string>("--size", sizeCallback, RS_A(L"CmdSizeDesc"));
 
     _app.add_option("-w,--window",
                     _windowTarget,
@@ -330,7 +340,7 @@ void AppCommandlineArgs::_buildMovePaneParser()
             if (_movePaneTabIndex >= 0)
             {
                 movePaneAction.Action(ShortcutAction::MovePane);
-                MovePaneArgs args{ static_cast<unsigned int>(_movePaneTabIndex) };
+                MovePaneArgs args{ static_cast<unsigned int>(_movePaneTabIndex), L"" };
                 movePaneAction.Args(args);
                 _startupActions.push_back(movePaneAction);
             }
@@ -558,6 +568,14 @@ void AppCommandlineArgs::_addNewTerminalArgs(AppCommandlineArgs::NewTerminalSubc
     subcommand.colorSchemeOption = subcommand.subcommand->add_option("--colorScheme",
                                                                      _startingColorScheme,
                                                                      RS_A(L"CmdColorSchemeArgDesc"));
+
+    subcommand.appendCommandLineOption = subcommand.subcommand->add_flag("--appendCommandLine", _appendCommandLineOption, RS_A(L"CmdAppendCommandLineDesc"));
+
+    subcommand.inheritEnvOption = subcommand.subcommand->add_flag(
+        "--inheritEnvironment,!--reloadEnvironment",
+        _inheritEnvironment,
+        RS_A(L"CmdInheritEnvDesc"));
+
     // Using positionals_at_end allows us to support "wt new-tab -d wsl -d Ubuntu"
     // without CLI11 thinking that we've specified -d twice.
     // There's an alternate construction where we make all subcommands "prefix commands",
@@ -579,7 +597,8 @@ NewTerminalArgs AppCommandlineArgs::_getNewTerminalArgs(AppCommandlineArgs::NewT
 {
     NewTerminalArgs args{};
 
-    if (!_commandline.empty())
+    const auto hasCommandline{ !_commandline.empty() };
+    if (hasCommandline)
     {
         std::ostringstream cmdlineBuffer;
 
@@ -644,6 +663,17 @@ NewTerminalArgs AppCommandlineArgs::_getNewTerminalArgs(AppCommandlineArgs::NewT
     {
         args.ColorScheme(winrt::to_hstring(_startingColorScheme));
     }
+    if (*subcommand.appendCommandLineOption)
+    {
+        args.AppendCommandLine(_appendCommandLineOption);
+    }
+
+    bool inheritEnv = hasCommandline;
+    if (*subcommand.inheritEnvOption)
+    {
+        inheritEnv = _inheritEnvironment;
+    }
+    args.ReloadEnvironmentVariables(!inheritEnv);
 
     return args;
 }
@@ -689,6 +719,7 @@ void AppCommandlineArgs::_resetStateToDefault()
     _startingTabColor.clear();
     _commandline.clear();
     _suppressApplicationTitle = false;
+    _appendCommandLineOption = false;
 
     _splitVertical = false;
     _splitHorizontal = false;
@@ -709,7 +740,7 @@ void AppCommandlineArgs::_resetStateToDefault()
     // DON'T clear _launchMode here! This will get called once for every
     // subcommand, so we don't want `wt -F new-tab ; split-pane` clearing out
     // the "global" fullscreen flag (-F).
-    // Same with _windowTarget.
+    // Same with _windowTarget, _position and _size.
 }
 
 // Function Description:
@@ -809,7 +840,11 @@ void AppCommandlineArgs::_addCommandsForArg(std::vector<Commandline>& commands, 
         else
         {
             // Harder case: There was a match.
-            const auto matchedFirstChar = match.position(0) == 0;
+
+            // Regex will include the last character of the string before the delimiter. (see _commandDelimiterRegex)
+            // If the match was at the beginning of the string then there is no last character
+            // so we can use the length of the match to determine if it was at the beginning.
+            const auto matchedFirstChar = match[0].length() == 1;
             // If the match was at the beginning of the string, then the
             // next arg should be "", since there was no content before the
             // delimiter. Otherwise, add one, since the regex will include
@@ -930,6 +965,16 @@ std::optional<uint32_t> AppCommandlineArgs::GetPersistedLayoutIdx() const noexce
 std::optional<winrt::Microsoft::Terminal::Settings::Model::LaunchMode> AppCommandlineArgs::GetLaunchMode() const noexcept
 {
     return _launchMode;
+}
+
+std::optional<winrt::Microsoft::Terminal::Settings::Model::LaunchPosition> AppCommandlineArgs::GetPosition() const noexcept
+{
+    return _position;
+}
+
+std::optional<til::size> AppCommandlineArgs::GetSize() const noexcept
+{
+    return _size;
 }
 
 // Method Description:

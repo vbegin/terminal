@@ -27,6 +27,7 @@
 #include "CustomTextLayout.h"
 #include "CustomTextRenderer.h"
 #include "DxFontRenderData.h"
+#include "DxSoftFont.h"
 
 #include "../../types/inc/Viewport.hpp"
 
@@ -56,21 +57,18 @@ namespace Microsoft::Console::Render
 
         [[nodiscard]] HRESULT SetWindowSize(const til::size pixels) noexcept override;
 
-        void SetCallback(std::function<void()> pfn) noexcept override;
+        void SetCallback(std::function<void(const HANDLE)> pfn) noexcept override;
         void SetWarningCallback(std::function<void(const HRESULT)> pfn) noexcept override;
-
-        void ToggleShaderEffects() noexcept override;
 
         bool GetRetroTerminalEffect() const noexcept override;
         void SetRetroTerminalEffect(bool enable) noexcept override;
 
+        std::wstring_view GetPixelShaderPath() noexcept override;
         void SetPixelShaderPath(std::wstring_view value) noexcept override;
 
         void SetForceFullRepaintRendering(bool enable) noexcept override;
 
         void SetSoftwareRendering(bool enable) noexcept override;
-
-        HANDLE GetSwapChainHandle() noexcept override;
 
         // IRenderEngine Members
         [[nodiscard]] HRESULT Invalidate(const til::rect* const psrRegion) noexcept override;
@@ -91,21 +89,26 @@ namespace Microsoft::Console::Render
 
         [[nodiscard]] HRESULT ScrollFrame() noexcept override;
 
+        [[nodiscard]] HRESULT UpdateSoftFont(const std::span<const uint16_t> bitPattern,
+                                             const til::size cellSize,
+                                             const size_t centeringHint) noexcept override;
+
         [[nodiscard]] HRESULT PrepareRenderInfo(const RenderFrameInfo& info) noexcept override;
 
         [[nodiscard]] HRESULT ResetLineTransform() noexcept override;
         [[nodiscard]] HRESULT PrepareLineTransform(const LineRendition lineRendition,
-                                                   const size_t targetRow,
-                                                   const size_t viewportLeft) noexcept override;
+                                                   const til::CoordType targetRow,
+                                                   const til::CoordType viewportLeft) noexcept override;
 
         [[nodiscard]] HRESULT PaintBackground() noexcept override;
-        [[nodiscard]] HRESULT PaintBufferLine(const gsl::span<const Cluster> clusters,
+        [[nodiscard]] HRESULT PaintBufferLine(const std::span<const Cluster> clusters,
                                               const til::point coord,
                                               const bool fTrimLeft,
                                               const bool lineWrapped) noexcept override;
 
-        [[nodiscard]] HRESULT PaintBufferGridLines(GridLineSet const lines, COLORREF const color, size_t const cchLine, til::point const coordTarget) noexcept override;
+        [[nodiscard]] HRESULT PaintBufferGridLines(const GridLineSet lines, const COLORREF gridlineColor, const COLORREF underlineColor, const size_t cchLine, const til::point coordTarget) noexcept override;
         [[nodiscard]] HRESULT PaintSelection(const til::rect& rect) noexcept override;
+        [[nodiscard]] HRESULT PaintSelections(const std::vector<til::rect>& rect) noexcept override;
 
         [[nodiscard]] HRESULT PaintCursor(const CursorOptions& options) noexcept override;
 
@@ -121,7 +124,7 @@ namespace Microsoft::Console::Render
 
         [[nodiscard]] HRESULT GetProposedFont(const FontInfoDesired& fiFontInfoDesired, FontInfo& fiFontInfo, const int iDpi) noexcept override;
 
-        [[nodiscard]] HRESULT GetDirtyArea(gsl::span<const til::rect>& area) noexcept override;
+        [[nodiscard]] HRESULT GetDirtyArea(std::span<const til::rect>& area) noexcept override;
 
         [[nodiscard]] HRESULT GetFontSize(_Out_ til::size* pFontSize) noexcept override;
         [[nodiscard]] HRESULT IsGlyphWideByFont(const std::wstring_view glyph, _Out_ bool* const pResult) noexcept override;
@@ -157,7 +160,7 @@ namespace Microsoft::Console::Render
         float _scale;
         float _prevScale;
 
-        std::function<void()> _pfn;
+        std::function<void(const HANDLE)> _pfn;
         std::function<void(const HRESULT)> _pfnWarningCallback;
 
         bool _isEnabled;
@@ -201,9 +204,10 @@ namespace Microsoft::Console::Render
         ::Microsoft::WRL::ComPtr<CustomTextRenderer> _customRenderer;
         ::Microsoft::WRL::ComPtr<ID2D1StrokeStyle> _strokeStyle;
         ::Microsoft::WRL::ComPtr<ID2D1StrokeStyle> _dashStrokeStyle;
-        ::Microsoft::WRL::ComPtr<ID2D1StrokeStyle> _hyperlinkStrokeStyle;
 
         std::unique_ptr<DxFontRenderData> _fontRenderData;
+        DxSoftFont _softFont;
+        bool _usingSoftFont;
 
         D2D1_STROKE_STYLE_PROPERTIES _strokeStyleProperties;
         D2D1_STROKE_STYLE_PROPERTIES _dashStrokeStyleProperties;
